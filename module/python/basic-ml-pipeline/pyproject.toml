@@ -1,0 +1,12 @@
+[project]
+name = "basic-ml-pipeline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "kafka-python>=2.2.7",
+    "polars>=1.29.0",
+    "requests>=2.32.3",
+    "requests-oauthlib>=2.0.0",
+]

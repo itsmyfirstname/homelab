@@ -1,0 +1,5 @@
+set dotenv-load
+
+
+run:
+    uv run basic_ml_pipeline/main.py 

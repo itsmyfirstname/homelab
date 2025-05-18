@@ -1,8 +1,13 @@
 .env
+
+# Terraform
 **/*.lock.hcl
 .terraform
 *.tfstate
 *.tfstate*
 
-# RUST
+# Rust
 **/target/*
+
+# Python
+**/__pycache__/
