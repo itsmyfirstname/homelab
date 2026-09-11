@@ -1,7 +1,12 @@
 sudo apt update
-sudo apt-get install openssh-server
+sudo apt-get install -y openssh-server
 
-usermod -aG sudo portainer
+# Create portainer user if it doesn't exist, and add it to sudoers
+if ! id "portainer" &>/dev/null; then
+    sudo useradd -m -s /bin/bash portainer
+fi
+sudo usermod -aG sudo portainer
+
 
 # Add Docker's official GPG key:
 sudo apt-get update \
