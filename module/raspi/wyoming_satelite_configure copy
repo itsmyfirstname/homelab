@@ -1,5 +1,0 @@
-
-cd wyoming-openwakeword
-script/setup
-
-sudo systemctl edit --force --full wyoming-openwakeword.service
