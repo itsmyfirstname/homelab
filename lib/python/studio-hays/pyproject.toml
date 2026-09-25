@@ -1,0 +1,24 @@
+[project]
+name = "studio-hays"
+version = "0.1.0"
+description = "A library of independent Python clients for homelab slices, sharing one core: config, state, drift detection, and a registry of operations."
+readme = "README.md"
+authors = [
+    { name = "Mehays", email = "mehays@hays.family" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.scripts]
+studio-hays = "studio_hays.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
