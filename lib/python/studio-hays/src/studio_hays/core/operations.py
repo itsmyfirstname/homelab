@@ -26,6 +26,8 @@ class Param:
     required: bool = False
     default: object = None
     description: str = ""
+    #: CLI only: taken positionally on the ``cli`` path (``ha get entity ID``)
+    positional: bool = False
 
 
 @dataclass(frozen=True)
@@ -41,10 +43,15 @@ class Operation:
     doc: str
     params: tuple[Param, ...] = ()
     handler: Callable | None = None
+    #: CLI words that reach this op, e.g. ``("list", "entities")`` (doc 04);
+    #: the op name itself is always accepted too
+    cli: tuple[str, ...] = ()
+    #: MCP tool name (without module prefix) when it differs from ``name``
+    tool: str = ""
 
     @property
     def tool_name(self) -> str:
-        return self.name
+        return self.tool or self.name
 
     def to_schema(self, prefix: str) -> dict:
         """MCP tool description: ``{name, description, inputSchema}``."""
@@ -60,7 +67,7 @@ class Operation:
             if p.required:
                 required.append(p.name)
         return {
-            "name": f"{prefix}_{self.name}",
+            "name": f"{prefix}_{self.tool_name}",
             "description": self.doc,
             "inputSchema": {
                 "type": "object",

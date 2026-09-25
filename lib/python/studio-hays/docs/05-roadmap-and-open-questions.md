@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | **M0 — docs** | this set; decisions flipped to "decided" | you've read and flipped the log |
 | **M1 — core kernel** ✅ | `core/{config,base,state,errors,testing}.py`; contract suite runs against a toy `_fixture` module | toy module passes: lazy, singleton, env config, CRUD write-through, refresh-rebuild, drift — **done** (11/11 tests, CLI smoke green) |
-| **M2 — home_assistant** | mirror mode; refactor `home-assistant-mcp`'s behavior onto the module: `get.domains/entities/entity`, `query`, `call.service`, `state.*`; CLI + per-module MCP server | success criteria 1–5 of doc 00; the sibling project's opencode config points at `studio-hays` |
+| **M2 — home_assistant** ✅ (code) | mirror mode; refactor `home-assistant-mcp`'s behavior onto the module: `get.domains/entities/entity`, `query`, `call.service`, `state.*`; CLI + per-module MCP server | success criteria 1–5 of doc 00; the sibling project's opencode config points at `studio-hays` |
 | **M3 — proxmox** | mirror + managed; `get.nodes/vm(s)`, `create/update/delete.vm`, `call.vm_*`, `state.*` incl. plan/apply | success criterion 6; `ops` history shows a real create; plan empty after apply |
 | **M4 — polish** | aggregate MCP server, `--table` views, docs per module, packaging extras (`[mcp]`), CI (contract suite per module) | `studio-hays mcp --modules home_assistant,proxmox` serves both; clean `uv build` |
 
@@ -28,6 +28,38 @@ the core before a third module multiplies the pain.
 - **Drift report shape**: `{added, removed, changed}` where each `changed`
   entry carries a `diff` of identity fields as `{was, is}`; module-level
   `state.drift()` adds `count`.
+
+### M2 implementation notes (settled while building)
+
+- **Lazy config is enforced**: `resolve()` records missing required keys in
+  `Config.missing`; `BaseClient._ensure()` raises the `ConfigError` at first
+  use, so `Client()` never raises (doc 00, guarantee 1).
+- **HA reads auto-refresh**: a read refreshes first when state was never
+  synced (errors propagate) or is past the 15 s staleness window
+  (best-effort: on failure the cached data is served with `stale: true`).
+  `fresh=True` always refreshes. This replaces the old project's 5 s
+  background poll without a daemon (Q-002 stays "on-demand in the lib").
+- **Q-010 settled as "invalidate"**: `call.service` writes nothing to the
+  snapshot, but marks it dirty so the next read refreshes.
+- **Registry carries surface names**: `Operation.cli` is the doc-04 command
+  path and `Operation.tool` the MCP tool name (`ha_list_entities`,
+  `ha_refresh`, `ha_drift`, …); `Param.positional` marks CLI positionals.
+  The op name (`get_entities key=value`) stays accepted by the CLI.
+- **`query` is a callable namespace**: `ha.query("kitchen")` ≡
+  `ha.query.entities("kitchen")` (op `query_entities`).
+- **CLI call syntax**: `studio-hays ha call light turn_on --data '{…}'`
+  (domain and service as two positionals; doc 04 updated).
+- **MCP builder lives in `core/mcp.py`** with the SDK (and its pydantic)
+  imported lazily, so `studio_hays.core` stays importable without `mcp`.
+  `mcp` is a hard dependency until the M4 `[mcp]` extra.
+- **Known limits (accepted for v0)**: the service-call invalidation is
+  in-process only — a CLI `call` doesn't invalidate a running MCP server,
+  which catches up within the 15 s window; and because reads auto-refresh,
+  `state.drift()` reports changes since the *last read*, not the last
+  explicit refresh.
+- **Deferred from doc 04**: global CLI flags (`--data-dir`, `--env-file`,
+  `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
+  `state.show(resource_type=…)` (HA has one resource type).
 
 ### M2 mapping (home-assistant-mcp → module)
 

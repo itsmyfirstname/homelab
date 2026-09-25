@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import ClassVar, Self, TypeVar, cast
 
-from .config import Config, ModuleSpec, resolve
+from .config import Config, ModuleSpec, require, resolve
 from .errors import StudioHaysError
 from .state import StateStore
 
@@ -124,6 +124,7 @@ class BaseClient:
     def _ensure(self) -> None:
         """Open transport + state on first use. Idempotent."""
         if self._http is None and self._state is None:
+            require(self.config, self.spec)
             self._state = StateStore(self.config.db_path)
             self._http = self._open_transport()
             self._on_connect()

@@ -44,12 +44,13 @@ studio-hays ha list domains
 studio-hays ha list entities [--domain D] [--search S] [--limit N]
 studio-hays ha get entity <entity_id>
 studio-hays ha query <text> [--domain D]
-studio-hays ha call <domain>.<service> [--data '{"k":"v"}']
+studio-hays ha call <domain> <service> [--data '{"k":"v"}']
 studio-hays ha state refresh
 studio-hays ha state drift
 studio-hays ha state show [--type entity] [--id ID]
 studio-hays ha state reset
 studio-hays ha state history [N]
+studio-hays ha mcp                      # per-module MCP server on stdio
 ```
 
 ### Command tree (Proxmox, sketch)
@@ -133,7 +134,7 @@ both, they're cheap.)
 
 ### Tool conventions
 
-- tool name: `<module_prefix>_<op.name>` — `ha_list_entities`,
+- tool name: `<module_prefix>_<op.tool_name>` (`Operation.tool`, else the op name) — `ha_list_entities`,
   `ha_get_entity`, `ha_drift`, `proxmox_create_vm`
 - description: `Operation.doc` (one line, human/LLM readable)
 - input schema: generated from `Operation.params` (name, type, required,

@@ -63,6 +63,8 @@ class Config:
     data_dir: Path
     db_path: Path
     timeout: float
+    #: env vars of required keys that resolved to nothing; raised at first use
+    missing: tuple[str, ...] = ()
 
     def get(self, name: str, default: object = None) -> object:
         return self.values.get(name, default)
@@ -109,13 +111,18 @@ def _lookup(env_var: str, dotenv: Mapping[str, str]) -> str | None:
 
 
 def resolve(spec: ModuleSpec, **kwargs: object) -> Config:
-    """Resolve a module's config: kwargs > env > .env > defaults."""
+    """Resolve a module's config: kwargs > env > .env > defaults.
+
+    Never raises for missing required keys (the lazy guarantee): they are
+    recorded in ``Config.missing`` and raised by :func:`require` at first use.
+    """
     dotenv = load_env_file(_env_file_path())
     data_dir = Path(
         _lookup(DATA_DIR_VAR, dotenv) or DEFAULT_DATA_DIR
     ).expanduser()
 
     values: dict[str, object] = {}
+    missing: list[str] = []
     for key in spec.keys:
         env_var = spec.env_var(key.name)
         if key.name in kwargs:
@@ -126,9 +133,7 @@ def resolve(spec: ModuleSpec, **kwargs: object) -> Config:
                 raw = key.default
         if raw in (None, ""):
             if key.required:
-                raise ConfigError(
-                    f"missing {env_var} (set the env var or pass {key.name}=...)"
-                )
+                missing.append(env_var)
             continue
         values[key.name] = key.type(raw) if isinstance(raw, str) else raw
 
@@ -141,4 +146,18 @@ def resolve(spec: ModuleSpec, **kwargs: object) -> Config:
         data_dir=data_dir,
         db_path=db_path,
         timeout=timeout,
+        missing=tuple(missing),
+    )
+
+
+def require(config: Config, spec: ModuleSpec) -> None:
+    """Raise :class:`ConfigError` naming every missing required key."""
+    if not config.missing:
+        return
+    kwargs = ", ".join(
+        f"{k.name}=..." for k in spec.keys if spec.env_var(k.name) in config.missing
+    )
+    it = "it" if len(config.missing) == 1 else "them"
+    raise ConfigError(
+        f"missing {', '.join(config.missing)} — set {it} or pass {kwargs}"
     )

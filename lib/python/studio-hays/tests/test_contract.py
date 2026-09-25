@@ -11,11 +11,18 @@ import json
 
 import pytest
 
+import studio_hays._fixture as fixture_module
+import studio_hays.home_assistant as ha_module
 from studio_hays._fixture import OPERATIONS, Client
 from studio_hays._fixture.client import FixtureRemote
 from studio_hays.core import NotFoundError, RemoteError
 
-NAMESPACES = ("get", "create", "update", "delete", "call", "state")
+NAMESPACES = ("get", "query", "create", "update", "delete", "call", "state")
+
+#: every module the registry-level contract runs against
+MODULE_CASES = pytest.mark.parametrize(
+    "module", [fixture_module, ha_module], ids=["fixture", "home_assistant"]
+)
 
 
 @pytest.fixture(autouse=True)
@@ -217,10 +224,11 @@ def test_drift_detection():
 
 # 8. registry parity ---------------------------------------------------------------
 
-def test_registry_parity():
-    c = Client()
-    names = {op.name for op in OPERATIONS}
-    for op in OPERATIONS:
+@MODULE_CASES
+def test_registry_parity(module):
+    c = module.Client()
+    names = {op.name for op in module.OPERATIONS}
+    for op in module.OPERATIONS:
         ns_name, sep, method = op.name.partition("_")
         assert sep and ns_name and method, f"bad op name: {op.name}"
         ns = getattr(c, ns_name, None)
@@ -230,8 +238,8 @@ def test_registry_parity():
         )
     # reverse: every namespace method has an operation
     for ns_name in NAMESPACES:
-        ns = getattr(c, ns_name)
-        for m in dir(ns):
+        ns = getattr(c, ns_name, None)
+        for m in dir(ns) if ns is not None else ():
             if m.startswith("_") or not callable(getattr(ns, m)):
                 continue
             assert f"{ns_name}_{m}" in names, (
@@ -241,10 +249,13 @@ def test_registry_parity():
 
 # operation schemas (MCP inputSchema source) ----------------------------------------
 
-def test_operations_schema():
-    for op in OPERATIONS:
-        schema = op.to_schema("fixture")
-        assert schema["name"] == f"fixture_{op.name}"
+@MODULE_CASES
+def test_operations_schema(module):
+    tool_names = [op.tool_name for op in module.OPERATIONS]
+    assert len(tool_names) == len(set(tool_names)), "duplicate MCP tool names"
+    for op in module.OPERATIONS:
+        schema = op.to_schema("x")
+        assert schema["name"] == f"x_{op.tool_name}"
         assert schema["description"]
         props = schema["inputSchema"]["properties"]
         required = schema["inputSchema"]["required"]

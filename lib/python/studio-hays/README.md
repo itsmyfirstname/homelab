@@ -34,8 +34,19 @@ uv run studio-hays fixture create_widget name=hello
 uv run studio-hays fixture state_drift
 ```
 
-Next: **M2** — `home_assistant` module (mirror mode). Build order and success
-criteria:
+**M2 code done** — `home_assistant` module (mirror mode), registry-generated
+CLI and MCP server:
+
+```sh
+export STUDIOHAYS_HA_URL=http://homeassistant.local:8123 STUDIOHAYS_HA_TOKEN=…
+uv run studio-hays ha list domains
+uv run studio-hays ha list entities --domain light
+uv run studio-hays ha call light turn_on --data '{"entity_id": "light.kitchen"}'
+uv run studio-hays mcp --modules home_assistant     # stdio MCP server
+```
+
+Next: cut `home-assistant-mcp`'s opencode config over, then **M3** — `proxmox`.
+Build order and success criteria:
 [docs/05-roadmap-and-open-questions.md](docs/05-roadmap-and-open-questions.md).
 
 ## Develop
