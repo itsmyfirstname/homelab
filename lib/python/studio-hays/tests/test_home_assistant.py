@@ -1,7 +1,8 @@
-"""home_assistant module, tested at its public seams (M2).
+"""home_assistant module, tested at its public seams (M2, M2.1).
 
-HTTP is faked at httpx's transport (``Client._transport``), so the module's
-real request building and error mapping run against a fake Home Assistant.
+``FakeHomeAssistant`` fakes REST at httpx's transport and serves the
+WebSocket API from a real local server, so the module's request building,
+WS protocol handling and error mapping all run.
 """
 
 from __future__ import annotations
@@ -9,52 +10,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
 import pytest
 
-from studio_hays.core import ConfigError, NotFoundError, RemoteError
+from studio_hays.core import ConfigError, NotFoundError, RemoteError, StudioHaysError
 from studio_hays.home_assistant import Client
+from studio_hays.home_assistant.testing import FakeHomeAssistant
 
 URL = "http://ha.test:8123"
 TOKEN = "test-token"
-
-
-class FakeHA:
-    """Just enough of the HA REST API: /api/states, /api/services."""
-
-    def __init__(self, states: list[dict] | None = None) -> None:
-        self.states: dict[str, dict] = {s["entity_id"]: s for s in states or []}
-        self.calls: list[tuple[str, str, object]] = []
-        self.down = False
-        self.status_override: int | None = None
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content) if request.content else None
-        self.calls.append((request.method, request.url.path, body))
-        if self.down:
-            raise httpx.ConnectError("connection refused", request=request)
-        if self.status_override is not None:
-            return httpx.Response(self.status_override)
-        if request.headers.get("authorization") != f"Bearer {TOKEN}":
-            return httpx.Response(401)
-        path = request.url.path
-        if request.method == "GET" and path == "/api/states":
-            return httpx.Response(200, json=list(self.states.values()))
-        if request.method == "GET" and path.startswith("/api/states/"):
-            state = self.states.get(path.removeprefix("/api/states/"))
-            return httpx.Response(200, json=state) if state else httpx.Response(404)
-        if request.method == "POST" and path.startswith("/api/services/"):
-            domain, _, service = path.removeprefix("/api/services/").partition("/")
-            if domain != "light" or service not in ("turn_on", "turn_off"):
-                return httpx.Response(400)
-            ids = (body or {}).get("entity_id")
-            changed = []
-            for eid in [ids] if isinstance(ids, str) else ids or []:
-                if eid in self.states:
-                    self.states[eid]["state"] = "on" if service == "turn_on" else "off"
-                    changed.append(self.states[eid])
-            return httpx.Response(200, json=changed)
-        return httpx.Response(404)
 
 
 def entity(entity_id: str, state: str, name: str | None = None, **attrs: object) -> dict:
@@ -83,20 +46,17 @@ def isolated(tmp_path, monkeypatch):
     for var in ("STUDIOHAYS_HA_URL", "STUDIOHAYS_HA_TOKEN", "STUDIOHAYS_HA_DB"):
         monkeypatch.delenv(var, raising=False)
     Client.reset()
-    Client._transport = None
     yield
-    Client._transport = None
     Client.reset()
 
 
 @pytest.fixture
-def fake(monkeypatch) -> FakeHA:
+def fake(monkeypatch):
     """A configured client environment talking to a seeded fake HA."""
     monkeypatch.setenv("STUDIOHAYS_HA_URL", URL)
     monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", TOKEN)
-    ha = FakeHA([dict(e, attributes=dict(e["attributes"])) for e in HOUSE])
-    Client._transport = httpx.MockTransport(ha.handler)
-    return ha
+    with FakeHomeAssistant(HOUSE, token=TOKEN) as ha:
+        yield ha
 
 
 # lazy config ------------------------------------------------------------------
@@ -289,7 +249,7 @@ def test_cli_call_service_with_json_data(fake, capsys):
 
 def test_cli_state_verbs_and_legacy_op_names(fake, capsys):
     code, out = run_cli(capsys, "ha", "state", "refresh")
-    assert code == 0 and out["count"] == 4
+    assert code == 0 and out["counts"]["entity"] == 4
     code, out = run_cli(capsys, "ha", "state", "history", "1")
     assert code == 0 and [op["op"] for op in out["ops"]] == ["refresh"]
     code, out = run_cli(capsys, "ha", "get_entity", "entity_id=light.bedroom")
@@ -318,7 +278,7 @@ def mcp_session(coro_fn):
     return asyncio.run(main())
 
 
-def tool_json(result) -> object:
+def tool_json(result) -> Any:
     (content,) = result.content
     return json.loads(content.text)
 
@@ -404,12 +364,433 @@ def test_cli_invalid_json_data_is_a_json_error_not_a_usage_exit(fake, capsys):
 
 # embedding: a host project passes its own config ------------------------------------
 
-def test_host_project_can_pass_url_token_and_db_as_kwargs(tmp_path, monkeypatch):
-    ha = FakeHA([dict(e, attributes=dict(e["attributes"])) for e in HOUSE])
-    Client._transport = httpx.MockTransport(ha.handler)
+def test_host_project_can_pass_url_token_and_db_as_kwargs(tmp_path):
     db = tmp_path / "host" / "cache.db"
-    c = Client(url=URL, token=TOKEN, db=str(db))
-    assert c.config.db_path == db
-    assert c.get.entity("light.kitchen")["entity"]["state"] == "off"
+    with FakeHomeAssistant(HOUSE, token=TOKEN):
+        c = Client(url=URL, token=TOKEN, db=str(db))
+        assert c.config.db_path == db
+        assert c.get.entity("light.kitchen")["entity"]["state"] == "off"
     assert db.exists()
 
+
+
+# M2.1: registries (STU-7 transport, STU-8 mirror) ------------------------------------
+
+PLUG = "dev-plug"
+AREAS = [
+    {"area_id": "guest_bedroom", "name": "Guest bedroom", "floor_id": "upstairs"},
+    {"area_id": "living_room", "name": "Living Room", "floor_id": "main"},
+    {"area_id": "kitchen", "name": "Kitchen", "floor_id": "main"},
+]
+LABELS = [
+    {"label_id": "first_floor", "name": "first_floor"},
+    {"label_id": "third_floor", "name": "third_floor"},
+    {"label_id": "outdoor", "name": "Outdoor"},
+]
+FLOORS = [{"floor_id": "main", "name": "Main", "level": 0}, {"floor_id": "upstairs", "name": "Upstairs", "level": 1}]
+DEVICES = [
+    {"id": PLUG, "name": "Smart Plug Mini", "name_by_user": "Reading Lamp",
+     "area_id": "guest_bedroom", "labels": ["third_floor"]},
+    {"id": "dev-kitchen", "name": "Kitchen Bulb", "area_id": "kitchen"},
+]
+STATES = [
+    entity("switch.reading_lamp", "off", "Reading Lamp"),
+    entity("sensor.reading_lamp_power", "0.0", "Reading Lamp Power"),
+    entity("button.reading_lamp_identify", "unknown", "Reading Lamp Identify"),
+    entity("light.kitchen", "off", "Kitchen Light"),
+    entity("sensor.outside_temp", "12.0", "Outside Temperature"),
+    entity("sun.sun", "above_horizon", "Sun"),
+]
+ENTRIES = [
+    {"entity_id": "switch.reading_lamp", "device_id": PLUG, "has_entity_name": True, "original_name": None},
+    {"entity_id": "sensor.reading_lamp_power", "device_id": PLUG, "has_entity_name": True, "original_name": "Power"},
+    {"entity_id": "button.reading_lamp_identify", "device_id": PLUG, "has_entity_name": True,
+     "original_name": "Identify", "name": "Reading Lamp Identify"},
+    {"entity_id": "light.kitchen", "device_id": "dev-kitchen", "has_entity_name": True, "original_name": None},
+    {"entity_id": "sensor.outside_temp", "area_id": "kitchen", "labels": ["outdoor"]},
+]
+
+
+@pytest.fixture
+def home(monkeypatch):
+    """The Reading Lamp scenario: a plug upstairs in the guest bedroom."""
+    monkeypatch.setenv("STUDIOHAYS_HA_URL", URL)
+    monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", TOKEN)
+    with FakeHomeAssistant(
+        STATES, token=TOKEN, devices=DEVICES, areas=AREAS, labels=LABELS,
+        floors=FLOORS, entries=ENTRIES, unregistered=["sun.sun"],
+    ) as ha:
+        yield ha
+
+
+def test_refresh_mirrors_registries_and_drift_sees_ui_side_changes(home):
+    ha = Client()
+    ha.state.refresh()
+    assert [c for c, _ in home.commands] == [
+        "config/entity_registry/list",
+        "config/device_registry/list",
+        "config/area_registry/list",
+        "config/label_registry/list",
+        "config/floor_registry/list",
+    ]
+    # someone moves and relabels the plug, and renames an area, in the HA UI
+    home.devices[PLUG].update(area_id="living_room", labels=["first_floor"])
+    home.areas["kitchen"]["name"] = "Galley"
+    home.entries["sensor.outside_temp"]["labels"] = []
+
+    changed = {(d["type"], d["id"]): d["diff"] for d in Client().state.drift()["changed"]}
+    assert changed[("device", PLUG)] == {
+        "area_id": {"was": "guest_bedroom", "is": "living_room"},
+        "labels": {"was": ["third_floor"], "is": ["first_floor"]},
+    }
+    assert changed[("area", "kitchen")] == {"name": {"was": "Kitchen", "is": "Galley"}}
+    assert changed[("registry_entry", "reg-sensor.outside_temp")] == {
+        "labels": {"was": ["outdoor"], "is": []}
+    }
+
+
+def test_websocket_auth_failure_names_the_token(monkeypatch):
+    monkeypatch.setenv("STUDIOHAYS_HA_URL", URL)
+    monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", TOKEN)
+    with FakeHomeAssistant(STATES, token=TOKEN, ws_token="other"):
+        with pytest.raises(RemoteError, match=r"rejected the access token \(WebSocket auth_invalid\)"):
+            Client().state.refresh()
+
+
+def test_websocket_unreachable_is_a_remote_error(home):
+    Client._ws_url = "ws://127.0.0.1:9/api/websocket"  # nothing listens on the discard port
+    with pytest.raises(RemoteError, match="cannot reach Home Assistant WebSocket API"):
+        Client().state.refresh()
+
+
+def test_websocket_command_error_carries_ha_code_and_message(home):
+    home.fail_next["config/label_registry/list"] = ("unknown_error", "registry exploded")
+    with pytest.raises(
+        RemoteError, match=r"config/label_registry/list failed: unknown_error: registry exploded"
+    ):
+        Client().state.refresh()
+
+
+# M2.1: registry-aware reads (STU-9) ----------------------------------------------------
+
+def ids(env: dict) -> list[str]:
+    return [e["entity_id"] for e in env["entities"]]
+
+
+def test_entities_filter_by_effective_area_name_or_id(home):
+    ha = Client()
+    assert ids(ha.get.entities(area="guest BEDROOM")) == [
+        "button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp"
+    ]
+    # light.kitchen inherits from its device; sensor.outside_temp overrides
+    assert ids(ha.get.entities(area="kitchen")) == ["light.kitchen", "sensor.outside_temp"]
+
+
+def test_entities_filter_by_label_on_entity_or_its_device(home):
+    ha = Client()
+    assert ids(ha.get.entities(label="outdoor")) == ["sensor.outside_temp"]
+    assert ids(ha.get.entities(label="Third_Floor", domain="switch")) == ["switch.reading_lamp"]
+
+
+def test_unknown_area_lists_the_known_ones(home):
+    with pytest.raises(NotFoundError, match=r"unknown area 'Attic' — known: Guest bedroom, Kitchen, Living Room"):
+        Client().get.entities(area="Attic")
+
+
+def test_get_entity_adds_registry_info(home):
+    reg = Client().get.entity("sensor.reading_lamp_power")["registry"]
+    assert reg == {
+        "registered": True,
+        "registry_id": "reg-sensor.reading_lamp_power",
+        "name": None,
+        "area": {"area_id": "guest_bedroom", "name": "Guest bedroom"},
+        "area_source": "device",
+        "floor": {"floor_id": "upstairs", "name": "Upstairs"},
+        "device": {"id": PLUG, "name": "Reading Lamp"},
+        "labels": [],
+        "device_labels": [{"label_id": "third_floor", "name": "third_floor"}],
+    }
+    assert Client().get.entity("sun.sun")["registry"] == {"registered": False}
+
+
+def test_list_areas_and_labels_with_counts(home):
+    ha = Client()
+    areas = {a["area_id"]: a for a in ha.get.areas()["areas"]}
+    assert areas["guest_bedroom"] == {
+        "area_id": "guest_bedroom", "name": "Guest bedroom",
+        "floor": "Upstairs", "device_count": 1, "entity_count": 3,
+    }
+    assert areas["living_room"]["entity_count"] == 0
+    labels = {x["label_id"]: x for x in ha.get.labels()["labels"]}
+    assert labels["third_floor"] == {
+        "label_id": "third_floor", "name": "third_floor", "device_count": 1, "entity_count": 0
+    }
+    assert labels["outdoor"]["entity_count"] == 1
+
+
+def test_get_device_by_name_id_or_one_of_its_entities(home):
+    ha = Client()
+    by_entity = ha.get.device("switch.reading_lamp")
+    assert ha.get.device("reading lamp")["device"] == by_entity["device"]
+    assert ha.get.device(PLUG)["device"] == by_entity["device"]
+    device = by_entity["device"]
+    assert device["name"] == "Reading Lamp" and device["area"]["name"] == "Guest bedroom"
+    assert device["labels"] == [{"label_id": "third_floor", "name": "third_floor"}]
+    assert ids(by_entity) == [
+        "button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp"
+    ]
+    assert by_entity["entities"][0]["name_override"] == "Reading Lamp Identify"
+
+
+def test_ambiguous_device_name_lists_candidates(home):
+    home.devices["dev-2"] = {"id": "dev-2", "name": "Reading Lamp", "name_by_user": None,
+                             "area_id": None, "labels": []}
+    with pytest.raises(StudioHaysError, match=r"ambiguous device .Reading Lamp. — matches: dev-2 \(Reading Lamp\), dev-plug \(Reading Lamp\)"):
+        Client().get.device("Reading Lamp")
+
+
+# M2.1: registry writes (STU-10) --------------------------------------------------------
+
+def updates(home: FakeHomeAssistant) -> list[tuple[str, dict]]:
+    return [(k, p) for k, p in home.commands if not k.endswith("/list")]
+
+
+def test_update_entity_renames_moves_and_labels_with_before_after(home):
+    ha = Client()
+    result = ha.update.entity(
+        "sensor.reading_lamp_power", name="Plug Power", area="kitchen", add_labels=["Outdoor"]
+    )
+    assert result["dry_run"] is False
+    assert result["changes"] == {
+        "name": {"was": None, "is": "Plug Power"},
+        "area_id": {"was": None, "is": "kitchen"},
+        "labels": {"was": [], "is": ["outdoor"]},
+    }
+    assert result["before"]["name"] is None and result["after"]["name"] == "Plug Power"
+    assert updates(home) == [(
+        "config/entity_registry/update",
+        {"entity_id": "sensor.reading_lamp_power", "name": "Plug Power",
+         "area_id": "kitchen", "labels": ["outdoor"]},
+    )]
+    reg = ha.get.entity("sensor.reading_lamp_power")["registry"]
+    assert reg["area"]["name"] == "Kitchen" and reg["area_source"] == "entity"
+    assert reg["labels"] == [{"label_id": "outdoor", "name": "Outdoor"}]
+    (op,) = [o for o in ha.state.history()["ops"] if o["op"] == "update"]
+    assert op["ok"] and op["resource_type"] == "registry_entry"
+
+
+def test_dry_run_plans_without_touching_ha(home):
+    ha = Client()
+    result = ha.update.entity("sensor.outside_temp", remove_labels=["outdoor"], dry_run=True)
+    assert result["dry_run"] is True
+    assert result["changes"] == {"labels": {"was": ["outdoor"], "is": []}}
+    assert result["after"]["labels"] == []
+    assert updates(home) == []
+    assert home.entries["sensor.outside_temp"]["labels"] == ["outdoor"]
+
+
+def test_empty_string_clears_area_and_name_override(home):
+    ha = Client()
+    ha.update.entity("sensor.outside_temp", area="")
+    ha.update.entity("button.reading_lamp_identify", name="")
+    assert home.entries["sensor.outside_temp"]["area_id"] is None
+    assert home.entries["button.reading_lamp_identify"]["name"] is None
+    assert ha.get.entity("sensor.outside_temp")["registry"]["area"] is None
+
+
+def test_change_entity_id(home):
+    ha = Client()
+    ha.update.entity("switch.reading_lamp", new_entity_id="switch.aquarium_light")
+    assert ha.get.entity("switch.aquarium_light")["registry"]["device"]["id"] == PLUG
+    with pytest.raises(NotFoundError):
+        ha.get.entity("switch.reading_lamp")
+
+
+def test_change_entity_id_must_keep_the_domain(home):
+    with pytest.raises(StudioHaysError, match="must keep the domain 'switch'"):
+        Client().update.entity("switch.reading_lamp", new_entity_id="light.aquarium")
+    assert updates(home) == []
+
+
+def test_unregistered_entity_cannot_be_edited(home):
+    with pytest.raises(
+        StudioHaysError, match="sun.sun is not in the entity registry — can't be renamed, labelled or moved"
+    ):
+        Client().update.entity("sun.sun", name="Sol")
+
+
+def test_unknown_label_is_rejected_before_calling_ha(home):
+    with pytest.raises(NotFoundError, match=r"unknown label 'aquarium' — known: first_floor, Outdoor, third_floor"):
+        Client().update.entity("switch.reading_lamp", add_labels=["aquarium"])
+    assert updates(home) == []
+
+
+def test_update_device_moves_its_inheriting_entities(home):
+    ha = Client()
+    result = ha.update.device(
+        "Reading Lamp", area="Living Room", add_labels=["first_floor"], remove_labels=["third_floor"]
+    )
+    assert result["changes"] == {
+        "area_id": {"was": "guest_bedroom", "is": "living_room"},
+        "labels": {"was": ["third_floor"], "is": ["first_floor"]},
+    }
+    assert updates(home) == [(
+        "config/device_registry/update",
+        {"device_id": PLUG, "area_id": "living_room", "labels": ["first_floor"]},
+    )]
+    assert ids(ha.get.entities(area="living room")) == [
+        "button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp"
+    ]
+
+
+def test_create_label_and_area(home):
+    ha = Client()
+    assert ha.create.label("Aquarium")["after"]["label_id"] == "aquarium"
+    assert ha.create.area("Attic")["after"]["area_id"] == "attic"
+    assert "Aquarium" in [x["name"] for x in ha.get.labels()["labels"]]
+    assert "Attic" in [a["name"] for a in ha.get.areas()["areas"]]
+    with pytest.raises(StudioHaysError, match="label 'aquarium' already exists"):
+        ha.create.label("aquarium")
+
+
+def test_failed_registry_write_is_audited_and_state_untouched(home):
+    ha = Client()
+    before = ha.get.entity("switch.reading_lamp")["registry"]
+    home.fail_next["config/entity_registry/update"] = ("home_assistant_error", "nope")
+    with pytest.raises(RemoteError, match="config/entity_registry/update failed: home_assistant_error: nope"):
+        ha.update.entity("switch.reading_lamp", name="Aquarium Light")
+    assert ha.get.entity("switch.reading_lamp")["registry"] == before
+    assert [o["ok"] for o in ha.state.history()["ops"] if o["op"] == "update"] == [False]
+
+
+def test_cli_update_device_dry_run_with_comma_separated_labels(home, capsys):
+    code, out = run_cli(
+        capsys, "ha", "update", "device", "Reading Lamp", "--area", "Living Room",
+        "--add-labels", "first_floor", "--remove-labels", "third_floor", "--dry-run",
+    )
+    assert code == 0 and out["dry_run"] is True
+    assert out["changes"]["labels"] == {"was": ["third_floor"], "is": ["first_floor"]}
+    assert updates(home) == []
+
+
+def test_mcp_update_entity_takes_label_arrays(home):
+    async def call(session):
+        return await session.call_tool(
+            "ha_update_entity",
+            {"entity_id": "switch.reading_lamp", "add_labels": ["Outdoor"], "dry_run": True},
+        )
+
+    out = tool_json(mcp_session(call))
+    assert out["changes"] == {"labels": {"was": [], "is": ["outdoor"]}}
+
+
+# M2.1: repurpose_device (STU-11) --------------------------------------------------------
+
+REPURPOSE: dict[str, Any] = dict(
+    area="Living Room", name="Aquarium Light",
+    add_labels=["first_floor"], remove_labels=["third_floor"],
+)
+
+
+def test_repurpose_dry_run_plans_every_change_and_lists_references(home):
+    home.references["switch.reading_lamp"] = {"automation": ["automation.lamp_at_dusk"], "script": []}
+    ha = Client()
+    result = ha.update.repurpose_device("switch.reading_lamp", rename_entity_ids=True, dry_run=True, **REPURPOSE)
+
+    assert result["dry_run"] is True and result["device_id"] == PLUG
+    plan = [(s["action"], s["target"], s["changes"]) for s in result["plan"]]
+    assert plan == [
+        ("update_device", PLUG, {
+            "name_by_user": {"was": "Reading Lamp", "is": "Aquarium Light"},
+            "area_id": {"was": "guest_bedroom", "is": "living_room"},
+            "labels": {"was": ["third_floor"], "is": ["first_floor"]},
+        }),
+        ("update_entity", "button.reading_lamp_identify", {
+            "name": {"was": "Reading Lamp Identify", "is": "Aquarium Light Identify"},
+            "new_entity_id": {"was": "button.reading_lamp_identify", "is": "button.aquarium_light_identify"},
+        }),
+        ("update_entity", "sensor.reading_lamp_power", {
+            "new_entity_id": {"was": "sensor.reading_lamp_power", "is": "sensor.aquarium_light_power"},
+        }),
+        ("update_entity", "switch.reading_lamp", {
+            "new_entity_id": {"was": "switch.reading_lamp", "is": "switch.aquarium_light"},
+        }),
+    ]
+    assert result["references"] == {"switch.reading_lamp": {"automation": ["automation.lamp_at_dusk"]}}
+    assert updates(home) == [
+        ("search/related", {"item_type": "entity", "item_id": eid})
+        for eid in ("button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp")
+    ]
+
+
+def test_repurpose_applies_the_plan(home):
+    ha = Client()
+    result = ha.update.repurpose_device("Reading Lamp", **REPURPOSE)
+    assert result["ok"] is True and result["not_applied"] == []
+    assert len(result["applied"]) == 2  # device + the one name override; entity_ids kept
+
+    after = ha.get.device("Aquarium Light")
+    assert after["device"]["area"]["name"] == "Living Room"
+    assert after["device"]["labels"] == [{"label_id": "first_floor", "name": "first_floor"}]
+    assert ids(after) == ["button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp"]
+    assert after["entities"][0]["name_override"] == "Aquarium Light Identify"
+    assert ha.get.entity("switch.reading_lamp")["entity"]["attributes"]["friendly_name"] == "Aquarium Light"
+
+
+def test_repurpose_stops_at_the_first_failure_and_reports(home):
+    home.fail_next["config/entity_registry/update"] = ("home_assistant_error", "busy")
+    ha = Client()
+    result = ha.update.repurpose_device(PLUG, rename_entity_ids=True, **REPURPOSE)
+    assert result["ok"] is False
+    assert "config/entity_registry/update failed: home_assistant_error: busy" in result["error"]
+    assert [s["target"] for s in result["applied"]] == [PLUG]
+    assert [s["target"] for s in result["not_applied"]] == [
+        "button.reading_lamp_identify", "sensor.reading_lamp_power", "switch.reading_lamp"
+    ]
+    assert home.devices[PLUG]["name_by_user"] == "Aquarium Light"
+    assert "switch.reading_lamp" in home.entries
+
+
+def test_repurpose_entity_without_device_is_an_error(home):
+    with pytest.raises(NotFoundError, match="entity sensor.outside_temp has no device"):
+        Client().update.repurpose_device("sensor.outside_temp", name="x", dry_run=True)
+
+
+# review fixes (M2.1) ---------------------------------------------------------------------
+
+def test_get_entity_shows_labels_inherited_from_its_device(home):
+    reg = Client().get.entity("switch.reading_lamp")["registry"]
+    assert reg["labels"] == []
+    assert reg["device_labels"] == [{"label_id": "third_floor", "name": "third_floor"}]
+
+
+def test_registry_write_invalidates_state_for_other_processes(home):
+    Client().update.entity("switch.reading_lamp", new_entity_id="switch.aquarium_light")
+    Client.reset()  # a fresh process: no in-memory dirty flag
+    assert Client().get.entity("switch.aquarium_light")["entity"]["state"] == "off"
+
+
+def test_repurpose_rejects_an_empty_name(home):
+    with pytest.raises(StudioHaysError, match="repurpose_device needs a new name"):
+        Client().update.repurpose_device(PLUG, name="", dry_run=True)
+
+
+def test_repurpose_entity_id_rewrite_is_token_bounded_and_name_is_literal(home):
+    home.entries["sensor.reading_lamp_power"]["name"] = "Reading Lamp Power"
+    home.entries["sensor.reading_lampshade"] = {
+        **home.entries["sensor.reading_lamp_power"],
+        "id": "reg-shade", "entity_id": "sensor.reading_lampshade", "name": None,
+    }
+    plan = Client().update.repurpose_device(
+        PLUG, name=r"Tank \1 Light", rename_entity_ids=True, dry_run=True
+    )["plan"]
+    by_target = {s["target"]: s["changes"] for s in plan}
+    assert by_target["sensor.reading_lamp_power"]["name"]["is"] == r"Tank \1 Light Power"
+    assert "sensor.reading_lampshade" not in by_target  # "reading_lamp" isn't a whole token there
+
+
+def test_ambiguous_names_show_ids_and_names(home):
+    home.devices["dev-2"] = {"id": "dev-2", "name": "Reading Lamp", "name_by_user": None,
+                             "area_id": None, "labels": []}
+    with pytest.raises(StudioHaysError, match=r"dev-2 \(Reading Lamp\), dev-plug \(Reading Lamp\)"):
+        Client().get.device("reading lamp")

@@ -233,7 +233,8 @@ auth-agnostic; each module implements its own transport (open question Q-005).
 
 1. `import studio_hays.<module>` has zero side effects (no env read, no I/O).
 2. No imports from sibling modules; only `studio_hays.core` + own files.
-3. Third-party imports (httpx, mcp SDK) are the only non-stdlib deps.
+3. Third-party imports (httpx, mcp SDK, and `websockets` for modules whose
+   remote needs a WebSocket API, e.g. HA registries) are the only non-stdlib deps.
 4. `Client()` is constructible with **no arguments** when env is configured.
 5. All state I/O goes through `StateStore`; no raw sqlite3 in module code.
 6. Every public method is registered in `OPERATIONS` (or is a documented

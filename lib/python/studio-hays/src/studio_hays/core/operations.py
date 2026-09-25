@@ -16,9 +16,9 @@ from dataclasses import dataclass
 class Param:
     """One parameter of an operation.
 
-    ``schema_type`` is a JSON-schema primitive name ("string", "integer",
-    "number", "boolean", "object") used to generate CLI flags and MCP tool
-    input schemas.
+    ``schema_type`` is a JSON-schema type name ("string", "integer",
+    "number", "boolean", "object", or "array" of strings) used to generate
+    CLI flags and MCP tool input schemas.
     """
 
     name: str
@@ -59,6 +59,8 @@ class Operation:
         required: list[str] = []
         for p in self.params:
             prop: dict[str, object] = {"type": p.schema_type}
+            if p.schema_type == "array":
+                prop["items"] = {"type": "string"}
             if p.description:
                 prop["description"] = p.description
             if p.default is not None:

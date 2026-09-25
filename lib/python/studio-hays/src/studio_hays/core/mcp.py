@@ -20,12 +20,13 @@ if TYPE_CHECKING:
 #: one module exposed on a server: (tool prefix, client, its operations)
 Surface = tuple[str, BaseClient, Iterable[Operation]]
 
-_PY_TYPES: dict[str, type] = {
+_PY_TYPES: dict[str, Any] = {
     "string": str,
     "integer": int,
     "number": float,
     "boolean": bool,
     "object": dict,
+    "array": list[str],
 }
 
 

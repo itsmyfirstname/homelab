@@ -7,6 +7,7 @@
 | **M0 — docs** | this set; decisions flipped to "decided" | you've read and flipped the log |
 | **M1 — core kernel** ✅ | `core/{config,base,state,errors,testing}.py`; contract suite runs against a toy `_fixture` module | toy module passes: lazy, singleton, env config, CRUD write-through, refresh-rebuild, drift — **done** (11/11 tests, CLI smoke green) |
 | **M2 — home_assistant** ✅ (code) | mirror mode; refactor `home-assistant-mcp`'s behavior onto the module: `get.domains/entities/entity`, `query`, `call.service`, `state.*`; CLI + per-module MCP server | success criteria 1–5 of doc 00; the sibling project's opencode config points at `studio-hays` |
+| **M2.1 — HA registries** ✅ (code) | Linear STU-6: mirror entity/device/area/label/floor registries over the WebSocket API; `update.entity/device`, `update.repurpose_device`, `create.label/area`; area/label read filters; `home-assistant-mcp` tools | fake-registry tests green; live acceptance is STU-14 |
 | **M3 — proxmox** | mirror + managed; `get.nodes/vm(s)`, `create/update/delete.vm`, `call.vm_*`, `state.*` incl. plan/apply | success criterion 6; `ops` history shows a real create; plan empty after apply |
 | **M4 — polish** | aggregate MCP server, `--table` views, docs per module, packaging extras (`[mcp]`), CI (contract suite per module) | `studio-hays mcp --modules home_assistant,proxmox` serves both; clean `uv build` |
 
@@ -52,9 +53,7 @@ the core before a third module multiplies the pain.
 - **MCP builder lives in `core/mcp.py`** with the SDK (and its pydantic)
   imported lazily, so `studio_hays.core` stays importable without `mcp`.
   `mcp` is a hard dependency until the M4 `[mcp]` extra.
-- **Known limits (accepted for v0)**: the service-call invalidation is
-  in-process only — a CLI `call` doesn't invalidate a running MCP server,
-  which catches up within the 15 s window; and because reads auto-refresh,
+- **Known limits (accepted for v0)**: because reads auto-refresh,
   `state.drift()` reports changes since the *last read*, not the last
   explicit refresh.
 - **home-assistant-mcp pivoted, not retired**: it keeps its `.env`
@@ -67,6 +66,35 @@ the core before a third module multiplies the pain.
 - **Deferred from doc 04**: global CLI flags (`--data-dir`, `--env-file`,
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).
+
+### M2.1 implementation notes (STU-6)
+
+- **Second HA transport**: registries only exist on HA's WebSocket API, so
+  `home_assistant/ws.py` opens one short-lived authenticated session per
+  refresh or write (`websockets` sync client, `max_size=None`). REST stays
+  for states and services.
+- **Snapshot resource types**: `registry_entry` (keyed by the stable
+  registry `id`, so an entity_id change is an update, not remove+add),
+  `device`, `area`, `label`, `floor`, pulled on every refresh. Refresh
+  results now carry per-type `counts`.
+- **Mirror-mode writes**: HA's returned entry is written through with an
+  `ops` row; `_created(..., manage=False)` keeps creates out of `managed`.
+- **Only passed fields change**; `""` (or `None` from Python) clears a name
+  or area. Every write takes `dry_run` and returns `changes` + before/after.
+- **`repurpose_device`** plans device → entity steps, rewrites name
+  overrides that mention the old device name, optionally entity_ids
+  (listing `search/related` automations/scripts), applies step by step and
+  stops at the first failure (`ok`, `applied`, `not_applied`, `error`).
+- **Invalidation is persisted**: service calls and registry writes set a
+  `dirty` meta flag in the state DB, so the next read in *any* process
+  (CLI or MCP) refreshes; registry writes are serialized with read-time
+  refreshes by one reentrant lock.
+- **Labels in reads**: the `label` filter matches the entity's or its
+  device's labels; `get_entity` reports both (`labels`, `device_labels`).
+- **Floors are read-only**; the floor-label cleanup is STU-13.
+- **Test harness**: `studio_hays.home_assistant.testing.FakeHomeAssistant`
+  (REST via MockTransport + a real local WebSocket server), shared with
+  `home-assistant-mcp`'s tests.
 
 ### M2 mapping (home-assistant-mcp → module)
 

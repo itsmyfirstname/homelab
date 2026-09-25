@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
     "mcp>=2.2",
+    "websockets>=17",
 ]
 
 [project.scripts]

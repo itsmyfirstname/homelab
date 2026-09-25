@@ -1,7 +1,8 @@
-"""The MCP tool surface opencode relies on, now backed by studio-hays.
+"""The MCP tool surface opencode relies on, backed by studio-hays.
 
-HTTP is faked at studio-hays' transport hook, so the real client, cache and
-tool wiring all run.
+``FakeHomeAssistant`` (from studio-hays) fakes REST at the transport hook and
+serves the WebSocket API from a real local server, so the real client, cache
+and tool wiring all run.
 """
 
 from __future__ import annotations
@@ -9,15 +10,16 @@ from __future__ import annotations
 import asyncio
 import json
 
-import httpx
 import pytest
 from mcp import Client as MCPClient
 from studio_hays.home_assistant import Client
+from studio_hays.home_assistant.testing import FakeHomeAssistant
 
 from home_assistant_mcp.server import mcp
 
-URL = "http://ha.test:8123"
+URL = FakeHomeAssistant.url
 TOKEN = "test-token"
+PLUG = "dev-plug"
 
 
 def _state(entity_id: str, state: str, name: str) -> dict:
@@ -30,41 +32,33 @@ def _state(entity_id: str, state: str, name: str) -> dict:
     }
 
 
-class FakeHA:
-    def __init__(self) -> None:
-        self.states = {
-            s["entity_id"]: s
-            for s in (
-                _state("light.kitchen", "off", "Kitchen Light"),
-                _state("light.bedroom", "on", "Bedroom Light"),
-                _state("sensor.hall_temp", "21.5", "Hallway Temperature"),
-            )
-        }
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        if request.headers.get("authorization") != f"Bearer {TOKEN}":
-            return httpx.Response(401)
-        path = request.url.path
-        if request.method == "GET" and path == "/api/states":
-            return httpx.Response(200, json=list(self.states.values()))
-        if request.method == "POST" and path == "/api/services/light/turn_on":
-            eid = json.loads(request.content)["entity_id"]
-            self.states[eid]["state"] = "on"
-            return httpx.Response(200, json=[self.states[eid]])
-        return httpx.Response(404)
-
-
 @pytest.fixture(autouse=True)
-def env(tmp_path, monkeypatch):
+def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HA_URL", URL)
     monkeypatch.setenv("HA_TOKEN", TOKEN)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "cache.db"))
     monkeypatch.setenv("STUDIOHAYS_ENV_FILE", str(tmp_path / "no.env"))
     monkeypatch.setenv("STUDIOHAYS_DATA_DIR", str(tmp_path / "data"))
     Client.reset()
-    Client._transport = httpx.MockTransport(FakeHA().handler)
-    yield
-    Client._transport = None
+    with FakeHomeAssistant(
+        [
+            _state("light.kitchen", "off", "Kitchen Light"),
+            _state("light.bedroom", "on", "Bedroom Light"),
+            _state("sensor.hall_temp", "21.5", "Hallway Temperature"),
+            _state("switch.reading_lamp", "off", "Reading Lamp"),
+        ],
+        token=TOKEN,
+        areas=[
+            {"area_id": "guest_bedroom", "name": "Guest bedroom"},
+            {"area_id": "living_room", "name": "Living Room"},
+        ],
+        labels=[{"label_id": "first_floor", "name": "first_floor"},
+                {"label_id": "third_floor", "name": "third_floor"}],
+        devices=[{"id": PLUG, "name": "Smart Plug", "name_by_user": "Reading Lamp",
+                  "area_id": "guest_bedroom", "labels": ["third_floor"]}],
+        entries=[{"entity_id": "switch.reading_lamp", "device_id": PLUG, "has_entity_name": True}],
+    ) as ha:
+        yield ha
     Client.reset()
 
 
@@ -76,17 +70,27 @@ def call(name: str, args: dict | None = None):
     return asyncio.run(main())
 
 
+def text(result) -> str:
+    return getattr(result.content[0], "text")
+
+
 def payload(result) -> dict:
-    assert not result.is_error, result.content[0].text
-    return json.loads(result.content[0].text)
+    assert not result.is_error, text(result)
+    return json.loads(text(result))
 
 
-def test_tool_surface_is_unchanged():
+def tools() -> dict:
     async def main():
         async with MCPClient(mcp) as session:
-            return {t.name for t in (await session.list_tools()).tools}
+            return {t.name: t for t in (await session.list_tools()).tools}
 
-    assert asyncio.run(main()) == {"list_entities", "get_entity", "list_domains", "call_service"}
+    return asyncio.run(main())
+
+
+# the original four tools: names and shapes unchanged ---------------------------------
+
+def test_original_tools_are_still_there():
+    assert {"list_entities", "get_entity", "list_domains", "call_service"} <= set(tools())
 
 
 def test_list_entities_filters_and_counts():
@@ -109,6 +113,7 @@ def test_list_domains():
     assert payload(call("list_domains"))["domains"] == [
         {"domain": "light", "count": 2},
         {"domain": "sensor", "count": 1},
+        {"domain": "switch", "count": 1},
     ]
 
 
@@ -123,10 +128,64 @@ def test_call_service_then_read_sees_the_change():
 
 def test_unknown_entity_is_a_tool_error():
     result = call("get_entity", {"entity_id": "light.nope"})
-    assert result.is_error and "entity not found: light.nope" in result.content[0].text
+    assert result.is_error and "entity not found: light.nope" in text(result)
 
 
 def test_missing_env_is_a_readable_tool_error(monkeypatch):
     monkeypatch.delenv("HA_URL")
     result = call("list_entities")
-    assert result.is_error and "HA_URL and HA_TOKEN must be set" in result.content[0].text
+    assert result.is_error and "HA_URL and HA_TOKEN must be set" in text(result)
+
+
+# registry tools (STU-12) ---------------------------------------------------------------
+
+def test_registry_tools_are_exposed_and_writes_say_mutating():
+    by_name = tools()
+    new = {"list_areas", "list_labels", "get_device", "update_entity", "update_device",
+           "repurpose_device", "create_label", "create_area"}
+    assert new <= set(by_name)
+    for name in ("update_entity", "update_device", "repurpose_device", "create_label", "create_area"):
+        assert "Mutating" in (by_name[name].description or "")
+        assert "dry_run" in by_name[name].input_schema["properties"]
+
+
+def test_list_entities_by_area_and_get_entity_registry_info():
+    out = payload(call("list_entities", {"area": "guest bedroom"}))
+    assert [e["entity_id"] for e in out["entities"]] == ["switch.reading_lamp"]
+    reg = payload(call("get_entity", {"entity_id": "switch.reading_lamp"}))["registry"]
+    assert reg["device"] == {"id": PLUG, "name": "Reading Lamp"}
+    assert reg["area_source"] == "device"
+
+
+def test_list_areas_labels_and_get_device():
+    assert [a["name"] for a in payload(call("list_areas"))["areas"]] == ["Guest bedroom", "Living Room"]
+    assert [x["name"] for x in payload(call("list_labels"))["labels"]] == ["first_floor", "third_floor"]
+    dev = payload(call("get_device", {"device": "switch.reading_lamp"}))
+    assert dev["device"]["name"] == "Reading Lamp"
+
+
+def test_repurpose_device_dry_run_then_apply(home):
+    args = {"device": "Reading Lamp", "area": "Living Room", "name": "Aquarium Light",
+            "add_labels": ["first_floor"], "remove_labels": ["third_floor"]}
+    plan = payload(call("repurpose_device", {**args, "dry_run": True}))
+    assert plan["dry_run"] is True and plan["plan"][0]["target"] == PLUG
+    assert home.devices[PLUG]["name_by_user"] == "Reading Lamp"
+
+    done = payload(call("repurpose_device", args))
+    assert done["ok"] is True
+    assert home.devices[PLUG]["area_id"] == "living_room"
+    assert payload(call("get_device", {"device": "Aquarium Light"}))["device"]["labels"] == [
+        {"label_id": "first_floor", "name": "first_floor"}
+    ]
+
+
+def test_update_entity_and_create_label():
+    payload(call("create_label", {"name": "Aquarium"}))
+    out = payload(call("update_entity", {"entity_id": "switch.reading_lamp", "add_labels": ["aquarium"]}))
+    assert out["changes"] == {"labels": {"was": [], "is": ["aquarium"]}}
+
+
+def test_empty_area_clears_and_omitted_fields_are_untouched(home):
+    payload(call("update_device", {"device": PLUG, "area": ""}))
+    assert home.devices[PLUG]["area_id"] is None
+    assert home.devices[PLUG]["name_by_user"] == "Reading Lamp"

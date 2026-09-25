@@ -73,7 +73,9 @@ Conventions:
 
   `stale` is true when `now - last_synced > 2 × refresh expectation` (modules
   declare a staleness window; HA: 15 s, since typical refresh is ~5 s).
-- write ops return the resource dict as the remote reported it.
+- write ops return the resource dict as the remote reported it; registry
+  edits (HA `update.*` / `create.*`) wrap it as `{dry_run, changes, before,
+  after}` so a `dry_run` and a real write have the same shape (M2.1).
 - `state.drift()` returns the drift report (doc 02) verbatim.
 
 ## Worked example: `home_assistant`
@@ -89,6 +91,16 @@ ha.get.entity("light.kitchen", fresh=True)
 
 ha.query("kitchen", domain="light")     # local search, no network
 
+ha.get.entities(area="Kitchen", label="outdoor")
+ha.get.areas(); ha.get.labels()
+ha.get.device("switch.reading_lamp")    # by name, id, or one of its entities
+
+ha.update.entity("sensor.plug_power", name="Plug Power", area="", dry_run=True)
+ha.update.device("Reading Lamp", area="Living Room", add_labels=["first_floor"])
+ha.update.repurpose_device("Reading Lamp", area="Living Room", name="Aquarium Light",
+                           add_labels=["first_floor"], remove_labels=["third_floor"])
+ha.create.label("Aquarium")
+
 ha.call.service("light", "turn_on", entity_id="light.kitchen")
 ha.call.service("switch", "toggle", entity_id="switch.garage")
 
@@ -99,9 +111,9 @@ ha.state.reset()
 ha.state.history(10)
 ```
 
-HA is **mirror mode** in v0: `create/update/delete` exist as a thin passthrough
-to the HA REST API for completeness (e.g. creating an input_boolean), but the
-primary verbs are `get` / `query` / `call`.
+HA is **mirror mode** in v0. `update` / `create` edit HA's registries (names,
+areas, labels) over the WebSocket API and write the result through to the
+mirror (M2.1, STU-6); there is no `delete`.
 
 ## Worked example: `proxmox`
 

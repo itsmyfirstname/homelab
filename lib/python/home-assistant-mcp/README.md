@@ -50,11 +50,13 @@ Entity domains with counts, largest first — useful for orienting before drilli
  "domains": [{"domain": "sensor", "count": 73}, {"domain": "light", "count": 16}]}
 ```
 
-### `list_entities(domain?, search?, limit=100)`
+### `list_entities(domain?, search?, area?, label?, limit=100)`
 
 Compact rows (`entity_id`, `state`, `friendly_name`) from the cache. `domain` filters by
 domain prefix (e.g. `light`), `search` is a case-insensitive substring match on
-`entity_id` or friendly name; both can be combined.
+`entity_id` or friendly name, `area` matches the entity's own area else its device's, and
+`label` matches labels on the entity or its device (areas and labels by name or id); all
+can be combined.
 
 ```json
 {"last_synced": "...", "stale": false, "total": 16,
@@ -63,10 +65,31 @@ domain prefix (e.g. `light`), `search` is a case-insensitive substring match on
 
 ### `get_entity(entity_id)`
 
-Full state plus the complete `attributes` object for one entity.
+Full state plus the complete `attributes` object for one entity, and a `registry` block: area
+(with `area_source`: `entity` or `device`), floor, device, labels, name override — or
+`{"registered": false}` for entities outside the entity registry.
 
-Errors (bad token, unknown entity, no data yet) come back as tool errors the model can read,
-e.g. `entity not found: light.kitchen` or `no data yet - initial sync failed: Home Assistant rejected HA_TOKEN (HTTP 401)`.
+### Registry reads: `list_areas`, `list_labels`, `get_device(device)`
+
+Areas with floor and device/entity counts; labels with counts; one device (by name, id, or one
+of its entity_ids) with its area, labels and entities.
+
+### Registry writes (mutating; all take `dry_run`)
+
+| Tool | Changes |
+| --- | --- |
+| `update_entity(entity_id, name?, area?, add_labels?, remove_labels?, new_entity_id?)` | one entity's registry entry |
+| `update_device(device, name?, area?, add_labels?, remove_labels?)` | one device; entities inheriting its area move with it |
+| `repurpose_device(device, area?, name?, add_labels?, remove_labels?, rename_entity_ids=false)` | device + the entity overrides/ids that mention its old name, step by step, stopping at the first failure |
+| `create_label(name)`, `create_area(name)` | a new label / area |
+
+Only the fields you pass change; `""` clears a name or area (inherit again). Results carry
+`changes` (`was`/`is`) and `before`/`after`. Registry edits go over Home Assistant's WebSocket
+API (the REST API can't edit registries).
+
+Errors (bad token, unknown entity/area/label, ambiguous names, entities outside the registry)
+come back as tool errors the model can read, e.g. `entity not found: light.kitchen` or
+`unknown area 'Attic' — known: Kitchen, Living Room, …`.
 
 ## opencode
 

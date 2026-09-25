@@ -39,8 +39,11 @@ class StateNamespace:
         rows = c._audited("refresh", None, None, None, c._pull)
         c.store.set_meta("module", c.module)
         c.store.replace_snapshot(rows, host=c._host())
-        c.store.log_op("refresh", result={"count": len(rows)})
-        return {"last_synced": c.store.last_synced, "count": len(rows)}
+        counts: dict[str, int] = {}
+        for resource_type, _, _ in rows:
+            counts[resource_type] = counts.get(resource_type, 0) + 1
+        c.store.log_op("refresh", result={"count": len(rows), "counts": counts})
+        return {"last_synced": c.store.last_synced, "count": len(rows), "counts": counts}
 
     def drift(self) -> dict:
         c = self._c
@@ -209,13 +212,19 @@ class BaseClient:
             raise
 
     def _created(
-        self, resource: str, desired: Mapping, send: Callable[[], dict]
+        self,
+        resource: str,
+        desired: Mapping,
+        send: Callable[[], dict],
+        *,
+        manage: bool = True,
     ) -> dict:
-        """``send`` returns the normalized created object; it becomes managed."""
+        """``send`` returns the normalized created object. It becomes managed
+        unless ``manage=False`` (mirror-mode resources, D-007)."""
         obj = self._audited("create", resource, None, desired, send)
         self.store.record_write(
             "create", resource, self._id_of(resource, obj),
-            obj=obj, desired=desired, args=desired, result=obj,
+            obj=obj, desired=desired if manage else None, args=desired, result=obj,
         )
         return obj
 

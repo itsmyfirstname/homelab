@@ -29,12 +29,14 @@ MODULES: dict[str, tuple[str, str, str]] = {
 #: package-style names accepted wherever a CLI name is
 ALIASES: dict[str, str] = {"home_assistant": "ha"}
 
-#: argparse converters; "object" stays a string and is JSON-parsed in _run
-#: so bad JSON is a one-line JSON error (exit 1), not an argparse usage exit
+#: argparse converters ("array" is comma-separated). "object" stays a string
+#: and is JSON-parsed in _run, so bad JSON is a one-line JSON error (exit 1),
+#: not an argparse usage exit
 _TYPES: dict[str, Callable[[str], object]] = {
     "integer": int,
     "number": float,
     "string": str,
+    "array": lambda raw: [v.strip() for v in raw.split(",") if v.strip()],
 }
 
 

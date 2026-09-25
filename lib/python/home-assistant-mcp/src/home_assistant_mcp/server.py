@@ -40,29 +40,152 @@ def _run(op: Callable[[Client], dict[str, Any]]) -> dict[str, Any]:
         raise ToolError(str(exc)) from exc
 
 
+MUTATING = (
+    "Mutating: changes Home Assistant's registry. Pass dry_run=true first to "
+    "see exactly what would change."
+)
+
+
+def _given(**kwargs: Any) -> dict[str, Any]:
+    """Only the arguments the caller actually passed (None = not passed)."""
+    return {k: v for k, v in kwargs.items() if v is not None}
+
+
 @mcp.tool()
-def list_entities(domain: str | None = None, search: str | None = None, limit: int = 100) -> dict:
+def list_entities(
+    domain: str | None = None,
+    search: str | None = None,
+    area: str | None = None,
+    label: str | None = None,
+    limit: int = 100,
+) -> dict:
     """List Home Assistant entities from the local cache.
 
     The cache is a full snapshot of Home Assistant, refreshed before a read
     whenever it is older than 2 x SYNC_INTERVAL seconds, so "stale" is false
     unless Home Assistant could not be reached. Returns compact rows with
     entity_id, state, and friendly_name. Optionally filter by domain (e.g.
-    "light", "sensor") and/or a case-insensitive search term matched against
-    entity_id or friendly_name. Use get_entity for full attributes of a
-    single entity.
+    "light", "sensor"), a case-insensitive search term matched against
+    entity_id or friendly_name, an area (name or id; the entity's own area,
+    else its device's) and/or a label (name or id, on the entity or its
+    device). Use get_entity for full attributes of a single entity.
     """
-    return _run(lambda c: c.get.entities(domain=domain, search=search, limit=limit))
+    return _run(lambda c: c.get.entities(**_given(
+        domain=domain, search=search, area=area, label=label, limit=limit,
+    )))
 
 
 @mcp.tool()
 def get_entity(entity_id: str) -> dict:
-    """Get the full state and complete attributes for one Home Assistant entity.
+    """Get the full state and complete attributes for one Home Assistant entity,
+    plus its registry info: area (and whether it comes from the device),
+    floor, device, labels, and any name override.
 
     Use list_entities first to find entity_ids.
     """
     env = _run(lambda c: c.get.entity(entity_id))
-    return {"last_synced": env["last_synced"], "stale": env["stale"], **env["entity"]}
+    return {
+        "last_synced": env["last_synced"],
+        "stale": env["stale"],
+        **env["entity"],
+        "registry": env["registry"],
+    }
+
+
+@mcp.tool()
+def list_areas() -> dict:
+    """List areas (rooms) with their floor and how many devices and entities are in each."""
+    return _run(lambda c: c.get.areas())
+
+
+@mcp.tool()
+def list_labels() -> dict:
+    """List labels with how many devices and entities carry each."""
+    return _run(lambda c: c.get.labels())
+
+
+@mcp.tool()
+def get_device(device: str) -> dict:
+    """Get a device - by name, device id, or one of its entity_ids - with its
+    area, floor, labels and all of its entities (with any name/area overrides).
+    """
+    return _run(lambda c: c.get.device(device))
+
+
+@mcp.tool(description=(
+    "Rename an entity, move it to an area, add/remove labels, or change its "
+    'entity_id. name="" clears a name override (the entity inherits its '
+    'device name again); area="" clears the area override (it inherits the '
+    "device's area). Areas and labels are names or ids. new_entity_id must keep "
+    "the domain and breaks automations that use the old id. " + MUTATING
+))
+def update_entity(
+    entity_id: str,
+    name: str | None = None,
+    area: str | None = None,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    new_entity_id: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.update.entity(entity_id, dry_run=dry_run, **_given(
+        name=name, area=area, add_labels=add_labels,
+        remove_labels=remove_labels, new_entity_id=new_entity_id,
+    )))
+
+
+@mcp.tool(description=(
+    "Rename a device, move it to an area (its entities that inherit the "
+    "device's area move with it), or add/remove labels. device is a name, id, "
+    'or one of its entity_ids. name="" / area="" clear. ' + MUTATING
+))
+def update_device(
+    device: str,
+    name: str | None = None,
+    area: str | None = None,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.update.device(device, dry_run=dry_run, **_given(
+        name=name, area=area, add_labels=add_labels, remove_labels=remove_labels,
+    )))
+
+
+@mcp.tool(description=(
+    "Repurpose a device that moved rooms and got a new job, e.g. a smart plug "
+    'that was the "Reading Lamp" in the guest bedroom and is now the '
+    '"Aquarium Light" in the living room: sets the device area and name, '
+    "rewrites entity name overrides that mention the old name, swaps labels, "
+    "and (rename_entity_ids=true, opt-in) rewrites entity_ids containing the "
+    "old name - the plan then lists automations/scripts referencing each old "
+    "id. Applies step by step and stops at the first failure; check ok, "
+    "applied, not_applied and error. " + MUTATING
+))
+def repurpose_device(
+    device: str,
+    area: str | None = None,
+    name: str | None = None,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    rename_entity_ids: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.update.repurpose_device(
+        device, rename_entity_ids=rename_entity_ids, dry_run=dry_run, **_given(
+            area=area, name=name, add_labels=add_labels, remove_labels=remove_labels,
+        ),
+    ))
+
+
+@mcp.tool(description="Create a label (fails if one with that name exists). " + MUTATING)
+def create_label(name: str, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.create.label(name, dry_run=dry_run))
+
+
+@mcp.tool(description="Create an area (no floor assignment; fails if the name exists). " + MUTATING)
+def create_area(name: str, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.create.area(name, dry_run=dry_run))
 
 
 @mcp.tool()
