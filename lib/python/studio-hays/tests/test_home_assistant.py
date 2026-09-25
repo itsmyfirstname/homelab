@@ -184,7 +184,7 @@ def test_first_read_with_ha_unreachable_raises_remote_error(fake):
 
 def test_rejected_token_names_the_env_var(fake, monkeypatch):
     monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", "wrong")
-    with pytest.raises(RemoteError, match=r"rejected STUDIOHAYS_HA_TOKEN \(HTTP 401\)"):
+    with pytest.raises(RemoteError, match=r"rejected the access token \(HTTP 401\).*STUDIOHAYS_HA_TOKEN"):
         Client().get.entities()
 
 
@@ -400,3 +400,16 @@ def test_read_after_call_reports_stale_when_the_refresh_fails(fake):
 def test_cli_invalid_json_data_is_a_json_error_not_a_usage_exit(fake, capsys):
     code, out = run_cli(capsys, "ha", "call", "light", "turn_on", "--data", "{nope")
     assert code == 1 and "--data" in out["error"]
+
+
+# embedding: a host project passes its own config ------------------------------------
+
+def test_host_project_can_pass_url_token_and_db_as_kwargs(tmp_path, monkeypatch):
+    ha = FakeHA([dict(e, attributes=dict(e["attributes"])) for e in HOUSE])
+    Client._transport = httpx.MockTransport(ha.handler)
+    db = tmp_path / "host" / "cache.db"
+    c = Client(url=URL, token=TOKEN, db=str(db))
+    assert c.config.db_path == db
+    assert c.get.entity("light.kitchen")["entity"]["state"] == "off"
+    assert db.exists()
+

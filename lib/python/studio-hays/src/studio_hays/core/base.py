@@ -83,8 +83,9 @@ class BaseClient:
     spec: ClassVar[ModuleSpec]
     #: dotted fields that count as real drift, per resource type (doc 02)
     identity_fields: ClassVar[dict[str, list[str]]] = {}
-    #: seconds after which state-backed reads report ``stale: true``
-    staleness_window: ClassVar[float] = 30.0
+    #: seconds after which state-backed reads report ``stale: true``;
+    #: overridable per instance by a host that knows its refresh cadence
+    staleness_window: float = 30.0
 
     _registry: ClassVar[dict[tuple[type, tuple], "BaseClient"]] = {}
     _registry_lock: ClassVar[threading.Lock] = threading.Lock()

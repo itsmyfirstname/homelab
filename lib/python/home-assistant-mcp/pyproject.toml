@@ -1,0 +1,32 @@
+[project]
+name = "home-assistant-mcp"
+version = "0.1.0"
+description = "MCP server for Home Assistant, backed by studio-hays"
+readme = "README.md"
+authors = [
+    { name = "itsmyfirstname", email = "itsmyfirstname@pm.me" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "mcp>=2.2.0",
+    "python-dotenv>=1.2.3",
+    "studio-hays",
+]
+
+[project.scripts]
+home-assistant-mcp = "home_assistant_mcp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv.sources]
+studio-hays = { path = "../studio-hays", editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

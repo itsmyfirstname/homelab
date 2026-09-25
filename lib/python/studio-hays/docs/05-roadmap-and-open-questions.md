@@ -57,6 +57,13 @@ the core before a third module multiplies the pain.
   which catches up within the 15 s window; and because reads auto-refresh,
   `state.drift()` reports changes since the *last read*, not the last
   explicit refresh.
+- **home-assistant-mcp pivoted, not retired**: it keeps its `.env`
+  (`HA_URL`/`HA_TOKEN`/`SYNC_INTERVAL`/`DB_PATH`), its four tools and its
+  opencode entry, and now delegates to `studio_hays.home_assistant` via an
+  editable path dependency. To support hosts like it, `Client(db=...)` is
+  accepted by every module and `staleness_window` is overridable per
+  instance. This satisfies "opencode points at studio-hays" without a
+  config change.
 - **Deferred from doc 04**: global CLI flags (`--data-dir`, `--env-file`,
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).

@@ -181,7 +181,10 @@ class Client(BaseClient):
         except httpx.HTTPError as exc:
             raise RemoteError(f"cannot reach Home Assistant at {self._host()}: {exc}") from exc
         if resp.status_code == 401:
-            raise RemoteError("Home Assistant rejected STUDIOHAYS_HA_TOKEN (HTTP 401)")
+            raise RemoteError(
+                "Home Assistant rejected the access token (HTTP 401) — "
+                "check STUDIOHAYS_HA_TOKEN or token="
+            )
         if resp.status_code == 404 and missing is not None:
             raise NotFoundError(missing)
         if not resp.is_success:

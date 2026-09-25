@@ -29,7 +29,7 @@ DATA_DIR_VAR = "STUDIOHAYS_DATA_DIR"
 TIMEOUT_VAR = "STUDIOHAYS_TIMEOUT"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_DATA_DIR = "~/.studiohays"
-DB_KEY = "db"  # virtual key: STUDIOHAYS_<SEGMENT>_DB
+DB_KEY = "db"  # every module: db=... kwarg or STUDIOHAYS_<SEGMENT>_DB
 
 
 @dataclass(frozen=True)
@@ -137,8 +137,8 @@ def resolve(spec: ModuleSpec, **kwargs: object) -> Config:
             continue
         values[key.name] = key.type(raw) if isinstance(raw, str) else raw
 
-    db_raw = _lookup(spec.env_var(DB_KEY), dotenv)
-    db_path = Path(db_raw).expanduser() if db_raw else data_dir / f"{spec.module}.db"
+    db_raw = kwargs.get(DB_KEY) or _lookup(spec.env_var(DB_KEY), dotenv)
+    db_path = Path(str(db_raw)).expanduser() if db_raw else data_dir / f"{spec.module}.db"
     timeout = float(_lookup(TIMEOUT_VAR, dotenv) or DEFAULT_TIMEOUT)
     return Config(
         module=spec.module,
