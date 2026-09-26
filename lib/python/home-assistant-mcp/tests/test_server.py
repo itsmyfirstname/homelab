@@ -214,7 +214,7 @@ def test_update_area_name_clash_is_explained(home):
 def test_call_service_errors_include_home_assistants_reason():
     result = call("call_service", {"domain": "homeassistant", "service": "update_area",
                                    "service_data": {"area_id": "x", "name": "y"}})
-    assert result.is_error and "Service homeassistant.update_area not found" in text(result)
+    assert result.is_error and "Home Assistant has no service homeassistant.update_area" in text(result)
 
 
 def test_call_service_return_response():

@@ -47,6 +47,14 @@ _ID_FIELDS = {kind: id_field for kind, _, id_field in REGISTRIES}
 REASON_LIMIT = 300
 
 
+class HTTPStatusError(RemoteError):
+    """A non-2xx REST reply; ``status`` lets callers refine the error."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def service_data(data: Mapping[str, object] | None) -> dict[str, object]:
     """Service data for ``call.service(**data)``; ``return_response`` is a call
     option (it selects ``?return_response``), not a data key."""
@@ -257,13 +265,7 @@ class _Call:
         reply = c._called(
             name,
             {"data": data, **({"return_response": True} if return_response else {})},
-            lambda: c._request(
-                "POST",
-                f"/api/services/{domain}/{service}",
-                data,
-                missing=f"unknown service {name} (HTTP 404)",
-                params={"return_response": ""} if return_response else None,
-            ),
+            lambda: c._post_service(domain, service, data, return_response),
         )
         c._dirty = True
         if isinstance(reply, dict):
@@ -354,9 +356,10 @@ class Client(BaseClient):
             raise NotFoundError(missing)
         if not resp.is_success:
             reason = _reason(resp)
-            raise RemoteError(
+            raise HTTPStatusError(
+                resp.status_code,
                 f"Home Assistant returned HTTP {resp.status_code} for {method} {path}"
-                + (f": {reason}" if reason else "")
+                + (f": {reason}" if reason else ""),
             )
         if not resp.content:
             return None
@@ -364,6 +367,38 @@ class Client(BaseClient):
             return resp.json()
         except ValueError as exc:
             raise RemoteError(f"Home Assistant sent invalid JSON for {method} {path}") from exc
+
+    def _post_service(
+        self, domain: str, service: str, data: Mapping, return_response: bool
+    ) -> Any:
+        name = f"{domain}.{service}"
+        try:
+            return self._request(
+                "POST",
+                f"/api/services/{domain}/{service}",
+                data,
+                missing=f"unknown service {name} (HTTP 404)",
+                params={"return_response": ""} if return_response else None,
+            )
+        except HTTPStatusError as exc:
+            # HA 2026.9 reports an unknown service as a bare "400: Bad Request"
+            if exc.status == 400 and self._service_exists(domain, service) is False:
+                raise NotFoundError(
+                    f"Home Assistant has no service {name} — check the service name; registry "
+                    "edits are not services (use update_entity/update_device/update_area)"
+                ) from exc
+            raise
+
+    def _service_exists(self, domain: str, service: str) -> bool | None:
+        """Whether HA lists the service (None if the list can't be fetched)."""
+        try:
+            listing = self._request("GET", "/api/services")
+        except RemoteError:
+            return None
+        return any(
+            d.get("domain") == domain and service in (d.get("services") or {})
+            for d in listing or []
+        )
 
     def _id_of(self, resource: str, obj: Mapping) -> str:
         return str(obj[_ID_FIELDS.get(resource, "id")])

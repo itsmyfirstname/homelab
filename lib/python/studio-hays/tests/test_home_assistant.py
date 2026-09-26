@@ -169,7 +169,7 @@ def test_call_service_hits_ha_and_next_read_reflects_it(fake):
 
 def test_failed_service_call_raises_and_is_audited(fake):
     ha = Client()
-    with pytest.raises(RemoteError, match="HTTP 400"):
+    with pytest.raises(NotFoundError, match="no service light.explode"):
         ha.call.service("light", "explode", entity_id="light.kitchen")
     assert [op["ok"] for op in ha.state.history()["ops"] if op["op"] == "call"] == [False]
 
@@ -798,10 +798,15 @@ def test_ambiguous_names_show_ids_and_names(home):
 
 # STU-15: HA 2026.9 drift ---------------------------------------------------------------
 
-def test_service_errors_carry_home_assistants_reason(fake):
-    with pytest.raises(RemoteError, match=r"HTTP 400 for POST /api/services/homeassistant/update_area: "
-                                          r"Service homeassistant.update_area not found"):
+def test_unknown_service_is_named_even_though_ha_only_says_bad_request(fake):
+    # real HA 2026.9 answers an unknown service with a bare "400: Bad Request"
+    with pytest.raises(NotFoundError, match=r"Home Assistant has no service homeassistant.update_area"):
         Client().call.service("homeassistant", "update_area", area_id="hallwat", name="Hallway")
+
+
+def test_bad_data_for_a_real_service_keeps_has_reason(fake):
+    with pytest.raises(RemoteError, match="does not support responses"):
+        Client().call.service("light", "turn_on", return_response=True, entity_id="light.kitchen")
 
 
 def test_response_only_service_needs_return_response(fake):

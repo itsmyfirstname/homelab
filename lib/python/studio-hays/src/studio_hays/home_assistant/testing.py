@@ -23,6 +23,8 @@ from .client import Client
 from .writes import slugify as slug
 
 HA_VERSION = "2026.9.3"
+#: services the fake knows (GET /api/services lists these)
+SERVICES = {("light", "turn_on"), ("light", "turn_off"), ("weather", "get_forecasts")}
 
 
 class CommandError(Exception):
@@ -120,6 +122,11 @@ class FakeHomeAssistant:
             if request.method == "GET" and path.startswith("/api/states/"):
                 state = self.states.get(path.removeprefix("/api/states/"))
                 return httpx.Response(200, json=state) if state else httpx.Response(404)
+            if request.method == "GET" and path == "/api/services":
+                by_domain: dict[str, dict] = {}
+                for d, svc in SERVICES:
+                    by_domain.setdefault(d, {})[svc] = {}
+                return httpx.Response(200, json=[{"domain": d, "services": v} for d, v in by_domain.items()])
             if request.method == "POST" and path.startswith("/api/services/"):
                 return self._service(path, body, "return_response" in request.url.params)
         return httpx.Response(404)
@@ -137,8 +144,9 @@ class FakeHomeAssistant:
             ids = (body or {}).get("entity_id")
             forecasts = {eid: {"forecast": [{"condition": "sunny"}]} for eid in [ids] if eid}
             return httpx.Response(200, json={"changed_states": [], "service_response": forecasts})
-        if domain != "light" or service not in ("turn_on", "turn_off"):
-            return _bad_request(f"Service {domain}.{service} not found.")
+        if (domain, service) not in SERVICES:
+            # real HA 2026.9: ServiceNotFound surfaces as a bare aiohttp 400
+            return httpx.Response(400, text="400: Bad Request")
         if return_response:
             return _bad_request(
                 "Service does not support responses. Remove return_response from request."
