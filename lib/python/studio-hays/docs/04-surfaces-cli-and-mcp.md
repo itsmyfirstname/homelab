@@ -52,6 +52,11 @@ studio-hays ha update area <area> [--name N] [--floor F] [--dry-run]
 studio-hays ha repurpose <device> [--area A] [--name N] [--add-labels …]
                          [--remove-labels …] [--rename-entity-ids] [--dry-run]
 studio-hays ha create label|area <name> [--dry-run]
+studio-hays ha delete area <area> [--force] [--dry-run]
+studio-hays ha list automations
+studio-hays ha get automation <automation_id>
+studio-hays ha save automation --config '{…}' [--automation-id ID] [--dry-run]
+studio-hays ha delete automation <automation_id> [--dry-run]
 studio-hays ha query <text> [--domain D]
 studio-hays ha call <domain> <service> [--data '{"k":"v"}'] [--return-response]
 studio-hays ha state refresh

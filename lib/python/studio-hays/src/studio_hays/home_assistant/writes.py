@@ -15,7 +15,8 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..core import NotFoundError, StudioHaysError
-from .registry import Registry, device_name, normalize_name
+from .automations import delete_automation, save_automation
+from .registry import Registry, device_name, normalize_name, slugify
 
 if TYPE_CHECKING:
     from .client import Client
@@ -142,11 +143,6 @@ def plan_device(
     if labels is not None:
         fields["labels"] = labels
     return current, fields
-
-
-def slugify(text: str) -> str:
-    """HA-style object_id slug: "Reading Lamp" -> "reading_lamp"."""
-    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def plan_repurpose(
@@ -296,6 +292,13 @@ class Update:
 
 
     @_serialized
+    def automation(
+        self, config: Mapping, automation_id: str | None = None, dry_run: bool = False
+    ) -> dict:
+        """Create or replace an automation (HA validates it first)."""
+        return save_automation(self._c, config, automation_id, dry_run)
+
+    @_serialized
     def repurpose_device(
         self,
         device: str,
@@ -345,6 +348,65 @@ class Update:
 
 def _public(step: dict) -> dict:
     return {"action": step["action"], "target": step["target"], "changes": step["changes"]}
+
+
+class Delete:
+    """``ha.delete``: remove areas and automations. Mutating unless ``dry_run=True``."""
+
+    def __init__(self, client: "Client") -> None:
+        self._c = client
+
+    @_serialized
+    def area(self, area: str, force: bool = False, dry_run: bool = False) -> dict:
+        """Delete an area. Refuses while devices or entity overrides still point
+        at it unless ``force=True`` (Home Assistant then unassigns them)."""
+        c = self._c
+        c._sync()
+        reg = Registry(c.store)
+        current = reg.area(area)
+        area_id = current["area_id"]
+        devices = sorted(
+            (d for d in reg.devices.values() if d.get("area_id") == area_id),
+            key=lambda d: device_name(d).casefold(),
+        )
+        overrides = sorted(eid for eid, e in reg.entries.items() if e.get("area_id") == area_id)
+        impact = {
+            "floor": (reg.floor_ref(area_id) or {}).get("name"),
+            "labels": reg.label_refs(current.get("labels") or []),
+            "device_count": len(devices),
+            "devices": [{"id": d["id"], "name": device_name(d)} for d in devices],
+            "entity_overrides": overrides,
+            "entity_count": reg.entity_count(area_id, c._entity_ids()),
+        }
+        result: dict[str, Any] = {
+            "area_id": area_id, "dry_run": dry_run, "needs_force": bool(devices or overrides),
+            "impact": impact, "before": current, "after": None,
+        }
+        if dry_run:
+            return result
+        if result["needs_force"] and not force:
+            parts = []
+            if devices:
+                parts.append(f"{len(devices)} device(s) ({', '.join(device_name(d) for d in devices)})")
+            if overrides:
+                parts.append(f"{len(overrides)} entity override(s) ({', '.join(overrides)})")
+            raise StudioHaysError(
+                f"area {current['name']!r} still has {' and '.join(parts)} — move them first, "
+                "or pass force=true (Home Assistant then leaves them without an area)"
+            )
+
+        def send() -> object:
+            with c._ws() as session:
+                return session.call("config/area_registry/delete", area_id=area_id)
+
+        c._deleted("area", area_id, send)
+        c._dirty = True  # devices/entities in the area were unassigned by HA
+        return result
+
+    @_serialized
+    def automation(self, automation_id: str, dry_run: bool = False) -> dict:
+        """Delete an automation (removes it from automations.yaml)."""
+        return delete_automation(self._c, automation_id, dry_run)
 
 
 class Create:

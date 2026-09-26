@@ -7,6 +7,7 @@ own ``area_id``, else its device's) and labels, and resolves user references
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 
 from ..core import NotFoundError, StateStore, StudioHaysError
@@ -14,6 +15,11 @@ from ..core import NotFoundError, StateStore, StudioHaysError
 
 def _index(store: StateStore, resource_type: str) -> dict[str, dict]:
     return {r["id"]: r["attributes"] for r in store.get_snapshot(resource_type)}
+
+
+def slugify(text: str) -> str:
+    """HA-style object_id slug: "Reading Lamp" -> "reading_lamp"."""
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
 
 def normalize_name(name: str) -> str:
@@ -58,6 +64,11 @@ class Registry:
         entry = self.entries.get(entity_id) or {}
         device = self.device_of(entity_id) or {}
         return set(entry.get("labels") or []) | set(device.get("labels") or [])
+
+    def entity_count(self, area_id: str, with_state: set[str]) -> int:
+        """Entities with a state whose effective area is ``area_id`` (the
+        population ``get.entities(area=...)`` returns)."""
+        return sum(self.area_of(eid)[0] == area_id for eid in self.entries if eid in with_state)
 
     def entities_of(self, device_id: str) -> list[str]:
         return sorted(eid for eid, e in self.entries.items() if e.get("device_id") == device_id)

@@ -67,6 +67,25 @@ the core before a third module multiplies the pain.
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).
 
+### STU-16…19 notes
+
+- **Automations** (`get.automations/automation`, `update.automation`,
+  `delete.automation`): HA 2026.9 dropped WS `config/automation/list`; config
+  lives at REST `/api/config/automation/config/{id}` (no list endpoint), so
+  listing reads the `automation.*` entities' `id` attribute. Saves run WS
+  `validate_config` first (that's also `dry_run`) and aren't mirrored in the
+  snapshot — only audited.
+- **`delete.area`** (first delete op; the M2.1 "no delete ops" assumption is
+  lifted for areas because area ids are immutable, so re-keying an area is
+  create + move + delete). Refuses while devices/entity overrides use the area
+  unless `force=True`.
+- **`call.service` reports `targets`** next to `changed_entities`, plus a
+  `note` when a target isn't in HA's changed list (async integrations such as
+  Lutron change state after the REST reply).
+- **Area counts**: `entity_count` counts entities with a state (same
+  population as `get.entities(area=…)`); `registry_entity_count` includes
+  disabled/stateless registry entries.
+
 ### STU-15 notes (HA 2026.9 drift)
 
 Verified against HA **2026.9.3**: WS auth and all registry list commands are

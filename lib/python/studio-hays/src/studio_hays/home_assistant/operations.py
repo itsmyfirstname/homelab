@@ -68,7 +68,8 @@ OPERATIONS: tuple[Operation, ...] = (
         "get_areas",
         "get",
         "area",
-        "List areas with their floor and device/entity counts.",
+        "List areas with their floor and device/entity counts (entity_count matches "
+        "list_entities(area=...); registry_entity_count also counts disabled entities).",
         params=(FRESH,),
         handler=lambda c, **kw: c.get.areas(**kw),
         cli=("list", "areas"),
@@ -92,6 +93,26 @@ OPERATIONS: tuple[Operation, ...] = (
         params=(DEVICE, FRESH),
         handler=lambda c, **kw: c.get.device(**kw),
         cli=("get", "device"),
+    ),
+    Operation(
+        "get_automations",
+        "get",
+        "automation",
+        "List automations (entity_id, automation_id, alias, on/off, last_triggered). "
+        "automation_id is what get/save/delete_automation take.",
+        params=(FRESH,),
+        handler=lambda c, **kw: c.get.automations(**kw),
+        cli=("list", "automations"),
+        tool="list_automations",
+    ),
+    Operation(
+        "get_automation",
+        "get",
+        "automation",
+        "Get one automation's stored config (triggers/conditions/actions) by automation_id.",
+        params=(Param("automation_id", required=True, positional=True, description="from list_automations"),),
+        handler=lambda c, **kw: c.get.automation(**kw),
+        cli=("get", "automation"),
     ),
     Operation(
         "query_entities",
@@ -166,6 +187,52 @@ OPERATIONS: tuple[Operation, ...] = (
         ),
         handler=lambda c, **kw: c.update.area(**kw),
         cli=("update", "area"),
+    ),
+    Operation(
+        "delete_area",
+        "delete",
+        "area",
+        "Delete an area. Refuses while devices or entity area overrides still point at it "
+        "unless force=true (Home Assistant then leaves them without an area); dry_run shows "
+        "the impact. Area ids never change, so re-creating under a new name is create_area + "
+        "moving devices + delete_area. " + MUTATING,
+        params=(
+            Param("area", required=True, positional=True, description="area name or id"),
+            Param("force", schema_type="boolean", default=False,
+                  description="delete even if devices/entities are still assigned"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.delete.area(**kw),
+        cli=("delete", "area"),
+    ),
+    Operation(
+        "update_automation",
+        "update",
+        "automation",
+        "Create or replace an automation. config is the full automation (alias, mode, "
+        "triggers/conditions/actions in HA 2026 syntax); automation_id defaults to config.id, "
+        "else a slug of the alias. Home Assistant validates it first; dry_run=true only "
+        "validates and shows create vs replace. HA reloads automations after a save. " + MUTATING,
+        params=(
+            Param("config", schema_type="object", required=True, description="the automation config"),
+            Param("automation_id", description="id to save under (defaults to config.id / alias slug)"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.update.automation(**kw),
+        cli=("save", "automation"),
+        tool="save_automation",
+    ),
+    Operation(
+        "delete_automation",
+        "delete",
+        "automation",
+        "Delete an automation by automation_id (removes it from automations.yaml). " + MUTATING,
+        params=(
+            Param("automation_id", required=True, positional=True, description="from list_automations"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.delete.automation(**kw),
+        cli=("delete", "automation"),
     ),
     Operation(
         "update_repurpose_device",

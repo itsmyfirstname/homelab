@@ -18,8 +18,9 @@ from typing import Any, ClassVar, cast
 import httpx
 
 from . import ws
+from .automations import get_automation, list_automations
 from .registry import Registry, device_name
-from .writes import Create, Update, changes, predicted
+from .writes import Create, Delete, Update, changes, predicted
 from ..core import (
     BaseClient,
     Key,
@@ -169,18 +170,25 @@ class _Get:
         )
 
     def areas(self, fresh: bool = False) -> dict:
-        """Areas with their floor and how many devices/entities are in each."""
+        """Areas with their floor and device/entity counts.
+
+        ``entity_count`` counts entities that have a state (what
+        ``entities(area=...)`` returns); ``registry_entity_count`` also counts
+        disabled and stateless registry entries. Both use the effective area.
+        """
         c = self._c
         c._sync(fresh)
         reg = Registry(c.store)
-        entity_areas = [reg.area_of(eid)[0] for eid in reg.entries]
+        with_state = c._entity_ids()
+        registry_areas = [reg.area_of(eid)[0] for eid in reg.entries]
         rows = [
             {
                 "area_id": a["area_id"],
                 "name": a["name"],
-                "floor": (reg.floors.get(a.get("floor_id") or "") or {}).get("name"),
+                "floor": (reg.floor_ref(a["area_id"]) or {}).get("name"),
                 "device_count": sum(d.get("area_id") == a["area_id"] for d in reg.devices.values()),
-                "entity_count": entity_areas.count(a["area_id"]),
+                "entity_count": reg.entity_count(a["area_id"], with_state),
+                "registry_entity_count": registry_areas.count(a["area_id"]),
             }
             for a in sorted(reg.areas.values(), key=lambda a: a["name"].casefold())
         ]
@@ -201,6 +209,14 @@ class _Get:
             for x in sorted(reg.labels.values(), key=lambda x: x["name"].casefold())
         ]
         return c._envelope(labels=rows)
+
+    def automations(self, fresh: bool = False) -> dict:
+        """Automations, from their automation.* entities (HA has no list API)."""
+        return list_automations(self._c, fresh)
+
+    def automation(self, automation_id: str) -> dict:
+        """One automation's stored config (verbatim, as in automations.yaml)."""
+        return get_automation(self._c, automation_id)
 
     def device(self, device: str, fresh: bool = False) -> dict:
         """A device (by name, id or one of its entity_ids) and its entities."""
@@ -262,6 +278,7 @@ class _Call:
         """
         c = self._c
         name = f"{domain}.{service}"
+        targets = _targets(c, domain, data)
         reply = c._called(
             name,
             {"data": data, **({"return_response": True} if return_response else {})},
@@ -272,13 +289,58 @@ class _Call:
             changed, response = reply.get("changed_states") or [], reply.get("service_response")
         else:
             changed, response = reply or [], None
+        changed_ids = [s["entity_id"] for s in changed]
         result: dict[str, Any] = {
             "service": name,
-            "changed_entities": [s["entity_id"] for s in changed],
+            "targets": targets,
+            "changed_entities": changed_ids,
         }
+        pending = [t for t in targets if t not in changed_ids]
+        if pending and not return_response:
+            result["note"] = (
+                f"no state change reported yet for {', '.join(pending)}: Home Assistant only "
+                "lists states that changed before the call returned, and some integrations "
+                "(e.g. Lutron, transitions) apply changes afterwards — verify with get_entity "
+                "rather than treating this as a failure"
+            )
         if return_response:
             result["response"] = response
         return result
+
+
+def _ids(value: object) -> list[str]:
+    """Ids from a service-call target field ("a, b" strings and lists alike)."""
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    return []
+
+
+def _targets(c: "Client", domain: str, data: Mapping[str, object]) -> list[str]:
+    """entity_ids a service call targets: explicit ``entity_id`` plus entities
+    reached through ``area_id`` / ``device_id`` / ``label_id`` (limited to the
+    service's domain, as HA does, except for the generic ``homeassistant``)."""
+    targets = _ids(data.get("entity_id"))
+    areas, devices, labels = (_ids(data.get(k)) for k in ("area_id", "device_id", "label_id"))
+    if not (areas or devices or labels):
+        return targets
+    c._sync()
+    reg = Registry(c.store)
+    with_state = c._entity_ids()
+    for eid in sorted(reg.entries):
+        if eid not in with_state or eid in targets:
+            continue
+        if domain != "homeassistant" and not eid.startswith(f"{domain}."):
+            continue
+        entry = reg.entries[eid]
+        if (
+            reg.area_of(eid)[0] in areas
+            or entry.get("device_id") in devices
+            or reg.labels_of(eid) & set(labels)
+        ):
+            targets.append(eid)
+    return targets
 
 
 class _State(StateNamespace):
@@ -536,6 +598,10 @@ class Client(BaseClient):
     @property
     def create(self) -> Create:
         return Create(self)
+
+    @property
+    def delete(self) -> Delete:
+        return Delete(self)
 
     @property
     def call(self) -> _Call:

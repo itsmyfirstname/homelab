@@ -200,6 +200,53 @@ def update_area(
 
 
 @mcp.tool(description=(
+    "Delete an area. Refuses while devices or entity area overrides still point "
+    "at it unless force=true (Home Assistant then leaves them without an area); "
+    "dry_run=true shows the impact. Area ids never change after creation, so "
+    "giving an area a new id is create_area + moving its devices + delete_area. "
+    + MUTATING
+))
+def delete_area(area: str, force: bool = False, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.delete.area(area, force=force, dry_run=dry_run))
+
+
+@mcp.tool()
+def list_automations() -> dict:
+    """List automations: entity_id, automation_id (what get/save/delete_automation
+    take), alias, state (on/off), last_triggered, mode. Automations defined in
+    YAML without an id have automation_id null and aren't editable here.
+    """
+    return _run(lambda c: c.get.automations())
+
+
+@mcp.tool()
+def get_automation(automation_id: str) -> dict:
+    """Get one automation's stored config (alias, mode, triggers, conditions,
+    actions) by automation_id, verbatim as in automations.yaml.
+    """
+    return _run(lambda c: c.get.automation(automation_id))
+
+
+@mcp.tool(description=(
+    "Create or replace an automation. config is the whole automation: alias, "
+    "mode, and triggers/conditions/actions in Home Assistant 2026 syntax "
+    '(e.g. {"trigger": "state", ...}, {"condition": "time", ...}, '
+    '{"action": "light.turn_on", ...}). automation_id defaults to config.id, '
+    "else a slug of the alias. Home Assistant validates the config first and "
+    "reports what's wrong; dry_run=true only validates and says whether it "
+    "would create or replace. Automations reload automatically after a save. "
+    + MUTATING
+))
+def save_automation(config: dict, automation_id: str | None = None, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.update.automation(config, automation_id=automation_id, dry_run=dry_run))
+
+
+@mcp.tool(description="Delete an automation by automation_id (removes it from automations.yaml). " + MUTATING)
+def delete_automation(automation_id: str, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.delete.automation(automation_id, dry_run=dry_run))
+
+
+@mcp.tool(description=(
     "Create an area (assign its floor with update_area). Fails if another area's "
     "name matches after Home Assistant's normalization (case and spaces ignored). " + MUTATING
 ))
@@ -240,9 +287,12 @@ def call_service(
     update_area and create_area/create_label instead (e.g. there is no
     homeassistant.update_area service). Errors include Home Assistant's reason.
 
-    Returns the entity_ids whose state changed directly as a result. The next
-    read refreshes the cache, so it reflects the call; slower changes (fades,
-    transitions) show up once they land in Home Assistant.
+    Returns `targets` (the entity_ids you asked for) and `changed_entities`
+    (the ones Home Assistant reported as changed before replying). Many
+    integrations (e.g. Lutron, anything with a transition) apply the change
+    after HA replies, so an empty or partial `changed_entities` is NOT a
+    failure - a `note` says which targets to verify, and a get_entity read
+    (the cache refreshes after every call) shows the real state.
     """
     return _run(lambda c: c.call.service(
         domain, service, return_response=return_response, **checked_service_data(service_data)

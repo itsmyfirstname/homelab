@@ -100,6 +100,13 @@ ha.update.device("Reading Lamp", area="Living Room", add_labels=["first_floor"])
 ha.update.repurpose_device("Reading Lamp", area="Living Room", name="Aquarium Light",
                            add_labels=["first_floor"], remove_labels=["third_floor"])
 ha.create.label("Aquarium")
+ha.update.area("hallwat", name="Main Hallway", floor="Main")
+ha.delete.area("Old Room", dry_run=True)      # impact; force=True if still in use
+
+ha.get.automations()                     # from automation.* entities
+ha.get.automation("hallway_nightlight_wakeup")
+ha.update.automation({"alias": "…", "triggers": […], "actions": […]}, dry_run=True)
+ha.delete.automation("hallway_nightlight_wakeup")
 
 ha.call.service("light", "turn_on", entity_id="light.kitchen")
 ha.call.service("switch", "toggle", entity_id="switch.garage")
@@ -112,8 +119,17 @@ ha.state.history(10)
 ```
 
 HA is **mirror mode** in v0. `update` / `create` edit HA's registries (names,
-areas, labels) over the WebSocket API and write the result through to the
-mirror (M2.1, STU-6); there is no `delete`.
+areas, floors, labels) over the WebSocket API and write the result through to
+the mirror (M2.1, STU-6/15); `delete.area` removes an area (STU-18).
+
+**Automations are the exception to "`get` is state only"** (STU-16): HA
+2026.9 keeps their config only behind its REST config view, so
+`get.automation(id)` reads it live (the envelope's `last_synced`/`stale`
+describe the entity mirror, not the config). `update.automation(config)` is
+an upsert — HA's config API has no separate create — and reports
+`action: create|replace`; its CLI verb is `save` (`ha save automation`) and
+its MCP tool `save_automation`. Automation configs aren't mirrored, only
+audited (`create` / `update` / `delete` ops rows).
 
 ## Worked example: `proxmox`
 

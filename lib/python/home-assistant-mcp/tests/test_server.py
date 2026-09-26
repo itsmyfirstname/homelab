@@ -228,3 +228,49 @@ def test_return_response_inside_service_data_is_a_readable_error():
     result = call("call_service", {"domain": "weather", "service": "get_forecasts",
                                    "service_data": {"return_response": True}})
     assert result.is_error and "return_response is a call option, not service data" in text(result)
+
+
+# STU-16/17/18 ---------------------------------------------------------------------------
+
+AUTOMATION = {
+    "alias": "Hallway wake-up",
+    "triggers": [{"trigger": "state", "entity_id": "binary_sensor.occupancy", "to": "on"}],
+    "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+}
+
+
+def test_automation_tools_round_trip(home):
+    by_name = tools()
+    for name in ("list_automations", "get_automation", "save_automation", "delete_automation"):
+        assert name in by_name
+    for name in ("save_automation", "delete_automation", "delete_area"):
+        assert "Mutating" in (by_name[name].description or "")
+
+    plan = payload(call("save_automation", {"config": AUTOMATION, "automation_id": "wake", "dry_run": True}))
+    assert plan["action"] == "create" and "wake" not in home.automations
+    payload(call("save_automation", {"config": AUTOMATION, "automation_id": "wake"}))
+    assert payload(call("get_automation", {"automation_id": "wake"}))["config"]["alias"] == "Hallway wake-up"
+    assert [a["automation_id"] for a in payload(call("list_automations"))["automations"]] == ["wake"]
+    payload(call("delete_automation", {"automation_id": "wake"}))
+    assert "wake" not in home.automations
+
+
+def test_invalid_automation_is_a_tool_error(home):
+    bad = {**AUTOMATION, "triggers": [{"trigger": "nonsense"}]}
+    result = call("save_automation", {"config": bad, "automation_id": "wake"})
+    assert result.is_error and "Invalid trigger 'nonsense'" in text(result)
+
+
+def test_delete_area_refuses_then_forces(home):
+    result = call("delete_area", {"area": "Guest bedroom"})
+    assert result.is_error and "still has 1 device(s)" in text(result)
+    payload(call("delete_area", {"area": "Guest bedroom", "force": True}))
+    assert "guest_bedroom" not in home.areas
+
+
+def test_call_service_reports_targets_and_async_note(home):
+    home.async_entities.add("light.kitchen")
+    out = payload(call("call_service", {"domain": "light", "service": "turn_on",
+                                        "service_data": {"entity_id": "light.kitchen"}}))
+    assert out["targets"] == ["light.kitchen"] and out["changed_entities"] == []
+    assert "verify with get_entity" in out["note"]

@@ -155,7 +155,9 @@ def test_call_service_hits_ha_and_next_read_reflects_it(fake):
     assert ha.get.entity("light.kitchen")["entity"]["state"] == "off"
 
     result = ha.call.service("light", "turn_on", entity_id="light.kitchen", brightness_pct=50)
-    assert result == {"service": "light.turn_on", "changed_entities": ["light.kitchen"]}
+    assert result == {
+        "service": "light.turn_on", "targets": ["light.kitchen"], "changed_entities": ["light.kitchen"]
+    }
     assert fake.calls[-1] == (
         "POST",
         "/api/services/light/turn_on",
@@ -244,7 +246,9 @@ def test_cli_call_service_with_json_data(fake, capsys):
         capsys, "ha", "call", "light", "turn_on", "--data", '{"entity_id": "light.kitchen"}'
     )
     assert code == 0
-    assert out == {"service": "light.turn_on", "changed_entities": ["light.kitchen"]}
+    assert out == {
+        "service": "light.turn_on", "targets": ["light.kitchen"], "changed_entities": ["light.kitchen"]
+    }
 
 
 def test_cli_state_verbs_and_legacy_op_names(fake, capsys):
@@ -411,6 +415,23 @@ ENTRIES = [
 ]
 
 
+#: stored the way older HA UIs wrote automations.yaml (singular keys)
+BEDTIME = {
+    "id": "1722387210528", "alias": "bedtime", "description": "", "mode": "single",
+    "trigger": [{"platform": "time", "at": "22:30:00"}],
+    "condition": [],
+    "action": [{"service": "light.turn_off", "target": {"entity_id": "light.kitchen"}}],
+}
+
+WAKEUP: dict[str, Any] = {
+    "alias": "Hallway night light wake-up",
+    "mode": "single",
+    "triggers": [{"trigger": "state", "entity_id": "binary_sensor.occupancy", "to": "on"}],
+    "conditions": [{"condition": "time", "after": "22:00:00", "before": "07:00:00"}],
+    "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+}
+
+
 @pytest.fixture
 def home(monkeypatch):
     """The Reading Lamp scenario: a plug upstairs in the guest bedroom."""
@@ -418,7 +439,7 @@ def home(monkeypatch):
     monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", TOKEN)
     with FakeHomeAssistant(
         STATES, token=TOKEN, devices=DEVICES, areas=AREAS, labels=LABELS,
-        floors=FLOORS, entries=ENTRIES, unregistered=["sun.sun"],
+        floors=FLOORS, entries=ENTRIES, unregistered=["sun.sun"], automations=[BEDTIME],
     ) as ha:
         yield ha
 
@@ -518,7 +539,7 @@ def test_list_areas_and_labels_with_counts(home):
     areas = {a["area_id"]: a for a in ha.get.areas()["areas"]}
     assert areas["guest_bedroom"] == {
         "area_id": "guest_bedroom", "name": "Guest bedroom",
-        "floor": "Upstairs", "device_count": 1, "entity_count": 3,
+        "floor": "Upstairs", "device_count": 1, "entity_count": 3, "registry_entity_count": 3,
     }
     assert areas["living_room"]["entity_count"] == 0
     labels = {x["label_id"]: x for x in ha.get.labels()["labels"]}
@@ -818,6 +839,7 @@ def test_response_only_service_needs_return_response(fake):
     )
     assert result == {
         "service": "weather.get_forecasts",
+        "targets": ["weather.home"],
         "changed_entities": [],
         "response": {"weather.home": {"forecast": [{"condition": "sunny"}]}},
     }
@@ -897,3 +919,195 @@ def test_return_response_inside_service_data_is_a_readable_error(fake, capsys):
     code, out = run_cli(capsys, "ha", "call", "weather", "get_forecasts",
                         "--data", '{"return_response": true}')
     assert code == 1 and "return_response is a call option, not service data" in out["error"]
+
+
+# STU-19: area counts agree with list_entities --------------------------------------------
+
+def test_area_entity_count_matches_list_entities(home):
+    # a disabled entry on the plug: registered, no state
+    home.entries["switch.reading_lamp_child_lock"] = {
+        **home.entries["switch.reading_lamp"],
+        "id": "reg-child-lock", "entity_id": "switch.reading_lamp_child_lock",
+        "disabled_by": "integration",
+    }
+    ha = Client()
+    area = {a["area_id"]: a for a in ha.get.areas()["areas"]}["guest_bedroom"]
+    listed = ha.get.entities(area="guest_bedroom")
+    assert area["entity_count"] == listed["total"] == 3
+    assert area["registry_entity_count"] == 4
+
+
+# STU-17: async integrations report no change ------------------------------------------
+
+def test_call_reports_targets_and_a_verify_note_when_nothing_changed_yet(fake):
+    fake.async_entities.add("light.kitchen")
+    ha = Client()
+    result = ha.call.service("light", "turn_on", entity_id=["light.kitchen", "light.bedroom"])
+    assert result["targets"] == ["light.kitchen", "light.bedroom"]
+    assert result["changed_entities"] == ["light.bedroom"]
+    assert "light.kitchen" in result["note"] and "get_entity" in result["note"]
+    # the change did land; a follow-up read shows it
+    assert ha.get.entity("light.kitchen")["entity"]["state"] == "on"
+
+
+def test_call_has_no_note_when_every_target_changed(fake):
+    result = Client().call.service("light", "turn_off", entity_id="light.bedroom")
+    assert result["targets"] == ["light.bedroom"] and "note" not in result
+
+
+# STU-18: delete_area -------------------------------------------------------------------
+
+def test_delete_area_dry_run_reports_the_impact(home):
+    result = Client().delete.area("Guest bedroom", dry_run=True)
+    assert result["dry_run"] is True and result["before"]["name"] == "Guest bedroom"
+    assert result["impact"] == {
+        "floor": "Upstairs",
+        "labels": [],
+        "device_count": 1,
+        "devices": [{"id": PLUG, "name": "Reading Lamp"}],
+        "entity_overrides": [],
+        "entity_count": 3,
+    }
+    assert updates(home) == []
+
+
+def test_delete_area_refuses_a_non_empty_area_without_force(home):
+    with pytest.raises(StudioHaysError, match=r"area 'Guest bedroom' still has 1 device\(s\) \(Reading Lamp\)"):
+        Client().delete.area("Guest bedroom")
+    assert "guest_bedroom" in home.areas
+
+
+def test_delete_area_with_force_unassigns_devices(home):
+    ha = Client()
+    result = ha.delete.area("Guest bedroom", force=True)
+    assert result["dry_run"] is False and result["after"] is None
+    assert "guest_bedroom" not in home.areas
+    assert ha.get.device(PLUG)["device"]["area"] is None
+    assert "Guest bedroom" not in [a["name"] for a in ha.get.areas()["areas"]]
+    (op,) = [o for o in ha.state.history()["ops"] if o["op"] == "delete"]
+    assert op["ok"] and op["resource_type"] == "area" and op["id"] == "guest_bedroom"
+
+
+def test_delete_empty_area_needs_no_force(home):
+    Client().delete.area("living_room")
+    assert "living_room" not in home.areas
+
+
+# STU-16: automations ----------------------------------------------------------------------
+
+def rest_writes(home: FakeHomeAssistant) -> list[tuple[str, str]]:
+    return [(m, p) for m, p, _ in home.calls if m in ("POST", "DELETE") and "/config/" in p]
+
+
+def test_list_automations_from_entities(home):
+    rows = Client().get.automations()["automations"]
+    assert rows == [{
+        "entity_id": "automation.bedtime", "automation_id": "1722387210528", "alias": "bedtime",
+        "state": "on", "last_triggered": None, "mode": "single",
+        "area": None, "labels": [], "disabled": False,
+    }]
+
+
+def test_get_automation_returns_config_verbatim(home):
+    got = Client().get.automation("1722387210528")
+    assert got["entity_id"] == "automation.bedtime" and got["config"] == BEDTIME
+
+
+def test_get_missing_automation_is_not_found(home):
+    with pytest.raises(NotFoundError, match="no automation with id 'nope' in automations.yaml"):
+        Client().get.automation("nope")
+
+
+def test_save_automation_dry_run_validates_without_writing(home):
+    result = Client().update.automation(WAKEUP, dry_run=True)
+    assert result["automation_id"] == "hallway_night_light_wake_up"
+    assert result["dry_run"] is True and result["action"] == "create" and result["before"] is None
+    assert [k for k, _ in home.commands if k == "validate_config"] == ["validate_config"]
+    assert rest_writes(home) == []
+
+
+def test_invalid_automation_is_rejected_with_has_reasons(home):
+    bad = {**WAKEUP, "triggers": [{"trigger": "nonsense"}]}
+    with pytest.raises(StudioHaysError, match=r"automation 'hallway_night_light_wake_up' is invalid: "
+                                              r"triggers: Invalid trigger 'nonsense' specified"):
+        Client().update.automation(bad)
+    assert rest_writes(home) == []
+
+
+def test_save_creates_then_replaces_and_is_audited(home):
+    ha = Client()
+    created = ha.update.automation(WAKEUP, automation_id="hallway_nightlight_wakeup")
+    assert created["action"] == "create" and created["after"]["alias"] == WAKEUP["alias"]
+    assert rest_writes(home) == [("POST", "/api/config/automation/config/hallway_nightlight_wakeup")]
+    listed = {r["automation_id"]: r for r in ha.get.automations()["automations"]}
+    assert listed["hallway_nightlight_wakeup"]["entity_id"] == "automation.hallway_night_light_wake_up"
+
+    dimmer = {**WAKEUP, "actions": [{"action": "light.turn_on", "data": {"brightness_pct": 10}}]}
+    replaced = ha.update.automation(dimmer, automation_id="hallway_nightlight_wakeup")
+    assert replaced["action"] == "replace"
+    assert replaced["before"]["actions"] == WAKEUP["actions"]
+    assert home.automations["hallway_nightlight_wakeup"]["actions"] == dimmer["actions"]
+    assert created["entity_id"] == "automation.hallway_night_light_wake_up"
+    ops = [(o["op"], o["resource_type"], o["ok"]) for o in ha.state.history()["ops"] if o["resource_type"] == "automation"]
+    assert ops == [("update", "automation", True), ("create", "automation", True)]
+
+
+def test_config_id_and_argument_must_agree(home):
+    with pytest.raises(StudioHaysError, match="doesn't match"):
+        Client().update.automation({**WAKEUP, "id": "a"}, automation_id="b", dry_run=True)
+
+
+def test_delete_automation(home):
+    ha = Client()
+    plan = ha.delete.automation("1722387210528", dry_run=True)
+    assert plan["before"] == BEDTIME and rest_writes(home) == []
+    ha.delete.automation("1722387210528")
+    assert "1722387210528" not in home.automations
+    assert ha.get.automations()["automations"] == []
+    with pytest.raises(NotFoundError):
+        ha.delete.automation("1722387210528")
+
+
+def test_cli_save_automation_dry_run(home, capsys):
+    code, out = run_cli(capsys, "ha", "save", "automation", "--config", json.dumps(WAKEUP), "--dry-run")
+    assert code == 0 and out["action"] == "create" and out["valid"] is True
+
+
+def test_list_automations_includes_disabled_ones_and_registry_metadata(home):
+    home.entries["automation.bedtime"] = {
+        **home.entries.get("automation.bedtime", {}), "id": "reg-bedtime",
+        "entity_id": "automation.bedtime", "unique_id": "1722387210528",
+        "area_id": "kitchen", "labels": ["outdoor"],
+    }
+    home.entries["automation.old_one"] = {
+        "id": "reg-old", "entity_id": "automation.old_one", "unique_id": "99",
+        "name": None, "original_name": "old one", "area_id": None, "device_id": None,
+        "labels": [], "disabled_by": "user",
+    }
+    rows = {r["entity_id"]: r for r in Client().get.automations()["automations"]}
+    assert rows["automation.bedtime"]["area"] == {"area_id": "kitchen", "name": "Kitchen"}
+    assert rows["automation.bedtime"]["labels"] == [{"label_id": "outdoor", "name": "Outdoor"}]
+    assert rows["automation.old_one"] == {
+        "entity_id": "automation.old_one", "automation_id": "99", "alias": "old one",
+        "state": None, "last_triggered": None, "mode": None,
+        "area": None, "labels": [], "disabled": True,
+    }
+
+
+def test_alias_derived_id_never_silently_replaces(home):
+    ha = Client()
+    ha.update.automation(WAKEUP)  # id derived from the alias
+    with pytest.raises(StudioHaysError, match="already exists — pass automation_id='hallway_night_light_wake_up' to replace it"):
+        ha.update.automation({**WAKEUP, "mode": "restart"})
+    replaced = ha.update.automation({**WAKEUP, "mode": "restart"}, automation_id="hallway_night_light_wake_up")
+    assert replaced["action"] == "replace"
+
+
+def test_call_targets_resolve_areas_and_devices(home):
+    ha = Client()
+    by_area = ha.call.service("light", "turn_on", area_id="kitchen")
+    assert by_area["targets"] == ["light.kitchen"]
+    by_device = ha.call.service("light", "turn_on", device_id="dev-kitchen")
+    assert by_device["targets"] == ["light.kitchen"]
+    # only the service's domain counts: the plug's switch/sensor/button aren't light targets
+    assert ha.call.service("light", "turn_on", device_id=PLUG)["targets"] == []

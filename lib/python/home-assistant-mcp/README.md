@@ -83,6 +83,7 @@ of its entity_ids) with its area, labels and entities.
 | `repurpose_device(device, area?, name?, add_labels?, remove_labels?, rename_entity_ids=false)` | device + the entity overrides/ids that mention its old name, step by step, stopping at the first failure |
 | `update_area(area, name?, floor?)` | rename an area / assign its floor (`floor=""` clears) |
 | `create_label(name)`, `create_area(name)` | a new label / area |
+| `delete_area(area, force=false)` | remove an area; refuses while devices/entity overrides use it unless `force` |
 
 Only the fields you pass change; `""` clears a name or area (inherit again). Results carry
 `changes` (`was`/`is`) and `before`/`after`. Registry edits go over Home Assistant's WebSocket
@@ -91,9 +92,19 @@ API (the REST API can't edit registries).
 Area and label names must be unique after Home Assistant's normalization (case and spaces
 ignored); a clash is reported before anything is sent.
 
+### Automations: `list_automations`, `get_automation(automation_id)`, `save_automation(config, automation_id?)`, `delete_automation(automation_id)`
+
+Home Assistant 2026.9 has no automation list API, so `list_automations` reads the `automation.*`
+entities (their `id` attribute is the `automation_id`). `save_automation` creates or replaces
+through `/api/config/automation/config/{id}` after Home Assistant validates the config
+(`dry_run=true` validates only); HA reloads automations itself. Save and delete are mutating.
+
 ### `call_service(domain, service, service_data?, return_response=false)`
 
-Fires a service. Response-only services (e.g. `weather.get_forecasts`) need
+Fires a service and returns `targets` (what you asked for) and `changed_entities` (what HA
+reported changed before replying). Async integrations (Lutron, transitions) change state after the
+reply, so an empty `changed_entities` isn't a failure — a `note` says to verify with `get_entity`.
+Response-only services (e.g. `weather.get_forecasts`) need
 `return_response=true` and return their data under `response`. Registry edits are not services
 (Home Assistant 2026.9 removed `homeassistant.update_area`) — use the registry tools above.
 

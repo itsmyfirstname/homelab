@@ -20,7 +20,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import Server, ServerConnection, serve
 
 from .client import Client
-from .writes import slugify as slug
+from .registry import slugify as slug
 
 HA_VERSION = "2026.9.3"
 #: services the fake knows (GET /api/services lists these)
@@ -48,6 +48,7 @@ class FakeHomeAssistant:
         entries: Iterable[Mapping] = (),
         unregistered: Iterable[str] = (),
         ws_token: str | None = None,
+        automations: Iterable[Mapping] = (),
     ) -> None:
         """``entries`` override the registry entry derived for each state;
         ``unregistered`` entity_ids get a state but no registry entry;
@@ -68,8 +69,15 @@ class FakeHomeAssistant:
         for e in entries:
             base = self.entries.get(e["entity_id"]) or _entry(e["entity_id"], None)
             self.entries[e["entity_id"]] = {**base, **_copy(e)}
+        #: automations.yaml: id -> config (as HA stores it)
+        self.automations: dict[str, dict] = {}
+        for a in automations:
+            self._store_automation(str(a["id"]), _copy(a))
         #: search/related answers: entity_id -> {"automation": [...], "script": [...]}
         self.references: dict[str, dict[str, list[str]]] = {}
+        #: entities whose integration applies service calls after HA replies
+        #: (like Lutron): their state changes, but the call reports no change
+        self.async_entities: set[str] = set()
         self.calls: list[tuple[str, str, object]] = []  # REST (method, path, json)
         self.commands: list[tuple[str, dict]] = []  # WS (type, payload)
         self.down = False
@@ -122,6 +130,8 @@ class FakeHomeAssistant:
             if request.method == "GET" and path.startswith("/api/states/"):
                 state = self.states.get(path.removeprefix("/api/states/"))
                 return httpx.Response(200, json=state) if state else httpx.Response(404)
+            if path.startswith(AUTOMATION_CONFIG):
+                return self._automation_config(request.method, path.removeprefix(AUTOMATION_CONFIG), body)
             if request.method == "GET" and path == "/api/services":
                 by_domain: dict[str, dict] = {}
                 for d, svc in SERVICES:
@@ -130,6 +140,49 @@ class FakeHomeAssistant:
             if request.method == "POST" and path.startswith("/api/services/"):
                 return self._service(path, body, "return_response" in request.url.params)
         return httpx.Response(404)
+
+    def _automation_config(self, method: str, automation_id: str, body: Any) -> httpx.Response:
+        """HA 2026.9's automation config view (there is no list endpoint)."""
+        if method == "GET":
+            config = self.automations.get(automation_id)
+            return httpx.Response(200, json=config) if config else _not_found()
+        if method == "DELETE":
+            if self.automations.pop(automation_id, None) is None:
+                return _not_found()
+            for eid in [e for e, st in self.states.items() if _automation_id(st) == automation_id]:
+                del self.states[eid]
+            return httpx.Response(200, json={"result": "ok"})
+        if method == "POST":
+            if not isinstance(body, dict):
+                return _bad_request("Message format incorrect: expected a JSON object")
+            for plural, singular in (("triggers", "trigger"), ("actions", "action")):
+                if plural not in body and singular not in body:
+                    return _bad_request(
+                        f"Message malformed: required key not provided @ data['{plural}']"
+                    )
+            self._store_automation(automation_id, {**body, "id": automation_id})
+            return httpx.Response(200, json={"result": "ok"})
+        return httpx.Response(405)
+
+    def _store_automation(self, automation_id: str, config: dict) -> None:
+        """Save a config and keep its automation.* entity (id attribute) in step."""
+        self.automations[automation_id] = config
+        existing = next(
+            (e for e, st in self.states.items() if _automation_id(st) == automation_id), None
+        )
+        eid = existing or f"automation.{slug(str(config.get('alias') or automation_id))}"
+        self.states[eid] = {
+            "entity_id": eid,
+            "state": "on",
+            "attributes": {
+                "id": automation_id,
+                "friendly_name": config.get("alias") or automation_id,
+                "last_triggered": None,
+                "mode": config.get("mode", "single"),
+            },
+            "last_changed": "2026-09-26T00:00:00+00:00",
+            "last_updated": "2026-09-26T00:00:00+00:00",
+        }
 
     def _service(self, path: str, body: Any, return_response: bool) -> httpx.Response:
         """HA 2026.9 semantics: unknown services are a 400 with a message;
@@ -156,7 +209,8 @@ class FakeHomeAssistant:
         for eid in [ids] if isinstance(ids, str) else ids or []:
             if eid in self.states:
                 self.states[eid]["state"] = "on" if service == "turn_on" else "off"
-                changed.append(self.states[eid])
+                if eid not in self.async_entities:
+                    changed.append(self.states[eid])
         return httpx.Response(200, json=changed)
 
     # ------------------------------------------------------------- WebSocket
@@ -210,10 +264,14 @@ class FakeHomeAssistant:
             return self._update_device(p)
         if kind == "config/area_registry/update":
             return self._update_area(p)
+        if kind == "config/area_registry/delete":
+            return self._delete_area(p)
         if kind == "config/area_registry/create":
             return self._create(self.areas, "area_id", p["name"], _area)
         if kind == "config/label_registry/create":
             return self._create(self.labels, "label_id", p["name"], _label)
+        if kind == "validate_config":
+            return _validate_config(p)
         if kind == "search/related":
             return self.references.get(p.get("item_id", ""), {})
         raise CommandError("unknown_command", f"Unknown command: {kind}")
@@ -258,6 +316,16 @@ class FakeHomeAssistant:
             area["floor_id"] = p["floor_id"]
         return dict(area)
 
+    def _delete_area(self, p: dict) -> str:
+        """Like HA: devices/entities in the area lose their assignment."""
+        area_id = p["area_id"]
+        if self.areas.pop(area_id, None) is None:
+            raise CommandError("not_found", "Area ID doesn't exist")
+        for row in [*self.devices.values(), *self.entries.values()]:
+            if row.get("area_id") == area_id:
+                row["area_id"] = None
+        return "success"
+
     def _create(self, table: dict, id_key: str, name: str, shape: Any) -> dict:
         _check_unique(table, id_key, name)
         row = shape({id_key: slug(name), "name": name})
@@ -280,6 +348,46 @@ class FakeHomeAssistant:
             else:
                 name = entry.get("original_name")
             state.setdefault("attributes", {})["friendly_name"] = name
+
+
+AUTOMATION_CONFIG = "/api/config/automation/config/"
+KNOWN_TRIGGERS = {"state", "time", "numeric_state", "template", "event", "sun", "time_pattern"}
+KNOWN_ACTIONS = {"action", "service", "choose", "delay", "if", "repeat", "wait_template",
+                 "wait_for_trigger", "variables", "stop", "condition", "parallel", "sequence"}
+
+
+def _automation_id(state: Mapping) -> str | None:
+    if not str(state.get("entity_id", "")).startswith("automation."):
+        return None
+    return (state.get("attributes") or {}).get("id")
+
+
+def _validate_config(p: dict) -> dict:
+    """WS validate_config: per-section {valid, error}, only for sections sent."""
+
+    def section(items: Any, check) -> dict:
+        for i, item in enumerate(items if isinstance(items, list) else [items]):
+            error = check(item) if isinstance(item, dict) else "expected a dictionary"
+            if error:
+                return {"valid": False, "error": f"{error} @ [{i}]"}
+        return {"valid": True, "error": None}
+
+    def trigger(t: dict) -> str | None:
+        kind = t.get("trigger", t.get("platform"))
+        return None if kind in KNOWN_TRIGGERS else f"Invalid trigger '{kind}' specified"
+
+    def condition(c: dict) -> str | None:
+        return None if "condition" in c else "required key not provided 'condition'"
+
+    def action(a: dict) -> str | None:
+        return None if KNOWN_ACTIONS & set(a) else "Unable to determine action"
+
+    checks = {"triggers": trigger, "conditions": condition, "actions": action}
+    return {k: section(p[k], checks[k]) for k in checks if k in p}
+
+
+def _not_found() -> httpx.Response:
+    return httpx.Response(404, json={"message": "Resource not found"})
 
 
 def _bad_request(message: str) -> httpx.Response:
