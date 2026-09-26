@@ -67,6 +67,25 @@ the core before a third module multiplies the pain.
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).
 
+### STU-15 notes (HA 2026.9 drift)
+
+Verified against HA **2026.9.3**: WS auth and all registry list commands are
+unchanged. Three gaps, fixed additively:
+
+- **No `homeassistant.update_area` service any more** — area edits are
+  WebSocket-only. New `update.area(area, name=, floor=, dry_run=)` →
+  `config/area_registry/update` (so area→floor assignment moved here from
+  STU-13; floor create/update stays there).
+- **HA's reason is in every REST error**: `_request` appends HA's JSON
+  `message` (or body text, truncated). 2026.9 answers unknown services with
+  **400**, not 404.
+- **Response-only services** need `?return_response`:
+  `call.service(..., return_response=True)` returns their data under
+  `response` (HA replies `{changed_states, service_response}` in that mode).
+- **Name uniqueness**: HA normalizes registry names (casefold, spaces
+  removed; punctuation kept) and rejects collisions; `update.area` / `create.*` pre-check with
+  the same `normalize_name` so the error names the clashing area.
+
 ### M2.1 implementation notes (STU-6)
 
 - **Second HA transport**: registries only exist on HA's WebSocket API, so

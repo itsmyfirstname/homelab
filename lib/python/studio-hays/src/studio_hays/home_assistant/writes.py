@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..core import NotFoundError, StudioHaysError
-from .registry import Registry, device_name
+from .registry import Registry, device_name, normalize_name
 
 if TYPE_CHECKING:
     from .client import Client
@@ -92,6 +92,34 @@ def plan_entity(
             raise StudioHaysError(f"{new_entity_id} already exists")
         fields["new_entity_id"] = new_entity_id
     return entry, fields
+
+
+def _ensure_unique_name(
+    kind: str, rows: Iterable[Mapping], name: str, exclude: str | None = None
+) -> None:
+    """Mirror HA 2026.9: registry names must be unique after normalization."""
+    wanted = normalize_name(name)
+    for row in rows:
+        if row[f"{kind}_id"] != exclude and normalize_name(row["name"]) == wanted:
+            raise StudioHaysError(
+                f"name {name!r} is already used by {kind} {row['name']!r} — pick a distinct name"
+            )
+
+
+def plan_area(
+    reg: Registry, area: str, *, name: Any = UNSET, floor: Any = UNSET
+) -> tuple[dict, dict]:
+    """(current area, fields for ``config/area_registry/update``)."""
+    current = reg.area(area)
+    fields: dict[str, Any] = {}
+    if name is not UNSET:
+        if not name or not name.strip():
+            raise StudioHaysError(f"area {current['area_id']}: the name can't be blank")
+        _ensure_unique_name("area", reg.areas.values(), name, exclude=current["area_id"])
+        _set(fields, "name", name, current.get("name"))
+    if floor is not UNSET:
+        _set(fields, "floor_id", reg.floor(floor)["floor_id"] if floor else None, current.get("floor_id"))
+    return current, fields
 
 
 def plan_device(
@@ -256,6 +284,16 @@ class Update:
         )
         return c._apply_step(_step("update_device", current["id"], current, fields), dry_run)
 
+    @_serialized
+    def area(
+        self, area: str, name: Any = UNSET, floor: Any = UNSET, dry_run: bool = False
+    ) -> dict:
+        """Rename an area and/or assign its floor (``floor=""`` clears it)."""
+        c = self._c
+        c._sync()
+        current, fields = plan_area(Registry(c.store), area, name=name, floor=floor)
+        return c._apply_step(_step("update_area", current["area_id"], current, fields), dry_run)
+
 
     @_serialized
     def repurpose_device(
@@ -327,8 +365,7 @@ class Create:
         c._sync()
         reg = Registry(c.store)
         rows = reg.labels if kind == "label" else reg.areas
-        if any(r["name"].casefold() == name.casefold() for r in rows.values()):
-            raise StudioHaysError(f"{kind} {name!r} already exists")
+        _ensure_unique_name(kind, rows.values(), name)
         if dry_run:
             return {"dry_run": True, "before": None, "after": {"name": name}}
 

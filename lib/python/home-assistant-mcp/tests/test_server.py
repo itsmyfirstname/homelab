@@ -189,3 +189,42 @@ def test_empty_area_clears_and_omitted_fields_are_untouched(home):
     payload(call("update_device", {"device": PLUG, "area": ""}))
     assert home.devices[PLUG]["area_id"] is None
     assert home.devices[PLUG]["name_by_user"] == "Reading Lamp"
+
+
+# STU-15: HA 2026.9 drift -------------------------------------------------------------
+
+def test_update_area_tool_renames_and_sets_floor(home):
+    tool = tools()["update_area"]
+    assert "Mutating" in (tool.description or "") and "dry_run" in tool.input_schema["properties"]
+    home.floors["main"] = {"floor_id": "main", "name": "Main", "level": 1}
+    out = payload(call("update_area", {"area": "Guest bedroom", "name": "Guest Room", "floor": "Main"}))
+    assert out["changes"] == {
+        "name": {"was": "Guest bedroom", "is": "Guest Room"},
+        "floor_id": {"was": None, "is": "main"},
+    }
+    assert home.areas["guest_bedroom"]["name"] == "Guest Room"
+
+
+def test_update_area_name_clash_is_explained(home):
+    result = call("update_area", {"area": "Guest bedroom", "name": "livingroom"})
+    assert result.is_error and "already used by area 'Living Room'" in text(result)
+    assert home.areas["guest_bedroom"]["name"] == "Guest bedroom"
+
+
+def test_call_service_errors_include_home_assistants_reason():
+    result = call("call_service", {"domain": "homeassistant", "service": "update_area",
+                                   "service_data": {"area_id": "x", "name": "y"}})
+    assert result.is_error and "Service homeassistant.update_area not found" in text(result)
+
+
+def test_call_service_return_response():
+    out = payload(call("call_service", {"domain": "weather", "service": "get_forecasts",
+                                        "service_data": {"entity_id": "weather.home"},
+                                        "return_response": True}))
+    assert out["response"] == {"weather.home": {"forecast": [{"condition": "sunny"}]}}
+
+
+def test_return_response_inside_service_data_is_a_readable_error():
+    result = call("call_service", {"domain": "weather", "service": "get_forecasts",
+                                   "service_data": {"return_response": True}})
+    assert result.is_error and "return_response is a call option, not service data" in text(result)

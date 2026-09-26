@@ -81,14 +81,25 @@ of its entity_ids) with its area, labels and entities.
 | `update_entity(entity_id, name?, area?, add_labels?, remove_labels?, new_entity_id?)` | one entity's registry entry |
 | `update_device(device, name?, area?, add_labels?, remove_labels?)` | one device; entities inheriting its area move with it |
 | `repurpose_device(device, area?, name?, add_labels?, remove_labels?, rename_entity_ids=false)` | device + the entity overrides/ids that mention its old name, step by step, stopping at the first failure |
+| `update_area(area, name?, floor?)` | rename an area / assign its floor (`floor=""` clears) |
 | `create_label(name)`, `create_area(name)` | a new label / area |
 
 Only the fields you pass change; `""` clears a name or area (inherit again). Results carry
 `changes` (`was`/`is`) and `before`/`after`. Registry edits go over Home Assistant's WebSocket
 API (the REST API can't edit registries).
 
+Area and label names must be unique after Home Assistant's normalization (case and spaces
+ignored); a clash is reported before anything is sent.
+
+### `call_service(domain, service, service_data?, return_response=false)`
+
+Fires a service. Response-only services (e.g. `weather.get_forecasts`) need
+`return_response=true` and return their data under `response`. Registry edits are not services
+(Home Assistant 2026.9 removed `homeassistant.update_area`) — use the registry tools above.
+
 Errors (bad token, unknown entity/area/label, ambiguous names, entities outside the registry)
-come back as tool errors the model can read, e.g. `entity not found: light.kitchen` or
+come back as tool errors the model can read, including Home Assistant's own reason for a failed
+request, e.g. `entity not found: light.kitchen`, `… HTTP 400 …: Service x.y not found.` or
 `unknown area 'Attic' — known: Kitchen, Living Room, …`.
 
 ## opencode

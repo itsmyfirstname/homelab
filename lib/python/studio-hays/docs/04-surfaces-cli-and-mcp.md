@@ -48,11 +48,12 @@ studio-hays ha get device <name|id|entity_id>
 studio-hays ha update entity <entity_id> [--name N] [--area A] [--add-labels a,b]
                          [--remove-labels c] [--new-entity-id ID] [--dry-run]
 studio-hays ha update device <device> [--name N] [--area A] [--add-labels …] [--dry-run]
+studio-hays ha update area <area> [--name N] [--floor F] [--dry-run]
 studio-hays ha repurpose <device> [--area A] [--name N] [--add-labels …]
                          [--remove-labels …] [--rename-entity-ids] [--dry-run]
 studio-hays ha create label|area <name> [--dry-run]
 studio-hays ha query <text> [--domain D]
-studio-hays ha call <domain> <service> [--data '{"k":"v"}']
+studio-hays ha call <domain> <service> [--data '{"k":"v"}'] [--return-response]
 studio-hays ha state refresh
 studio-hays ha state drift
 studio-hays ha state show [--type entity] [--id ID]

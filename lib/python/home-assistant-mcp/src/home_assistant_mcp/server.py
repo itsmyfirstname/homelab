@@ -15,6 +15,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from studio_hays.core import StudioHaysError
 from studio_hays.home_assistant import Client
+from studio_hays.home_assistant.client import service_data as checked_service_data
 
 from .config import load_settings
 
@@ -183,7 +184,25 @@ def create_label(name: str, dry_run: bool = False) -> dict:
     return _run(lambda c: c.create.label(name, dry_run=dry_run))
 
 
-@mcp.tool(description="Create an area (no floor assignment; fails if the name exists). " + MUTATING)
+@mcp.tool(description=(
+    "Rename an area and/or assign it to a floor. area and floor are names or "
+    'ids; floor="" clears the floor. Area names must be unique after Home '
+    "Assistant's normalization (case and spaces ignored), so renaming to an "
+    "existing room's name fails - pick a distinct name. " + MUTATING
+))
+def update_area(
+    area: str,
+    name: str | None = None,
+    floor: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.update.area(area, dry_run=dry_run, **_given(name=name, floor=floor)))
+
+
+@mcp.tool(description=(
+    "Create an area (assign its floor with update_area). Fails if another area's "
+    "name matches after Home Assistant's normalization (case and spaces ignored). " + MUTATING
+))
 def create_area(name: str, dry_run: bool = False) -> dict:
     return _run(lambda c: c.create.area(name, dry_run=dry_run))
 
@@ -198,7 +217,12 @@ def list_domains() -> dict:
 
 
 @mcp.tool()
-def call_service(domain: str, service: str, service_data: dict | None = None) -> dict:
+def call_service(
+    domain: str,
+    service: str,
+    service_data: dict | None = None,
+    return_response: bool = False,
+) -> dict:
     """Call a Home Assistant service.
 
     domain is the entity domain - the prefix of an entity_id before the first
@@ -207,8 +231,19 @@ def call_service(domain: str, service: str, service_data: dict | None = None) ->
     "entity_id" to target an entity, e.g. call_service("light", "turn_on",
     {"entity_id": "light.bedroom", "brightness_pct": 50}).
 
+    Set return_response=true for services that return data (e.g.
+    weather.get_forecasts, calendar.get_events); Home Assistant rejects them
+    otherwise, and rejects it for services that don't return data. Their data
+    comes back under "response".
+
+    Registry edits are not services: use update_entity, update_device,
+    update_area and create_area/create_label instead (e.g. there is no
+    homeassistant.update_area service). Errors include Home Assistant's reason.
+
     Returns the entity_ids whose state changed directly as a result. The next
     read refreshes the cache, so it reflects the call; slower changes (fades,
     transitions) show up once they land in Home Assistant.
     """
-    return _run(lambda c: c.call.service(domain, service, **(service_data or {})))
+    return _run(lambda c: c.call.service(
+        domain, service, return_response=return_response, **checked_service_data(service_data)
+    ))

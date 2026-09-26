@@ -649,7 +649,7 @@ def test_create_label_and_area(home):
     assert ha.create.area("Attic")["after"]["area_id"] == "attic"
     assert "Aquarium" in [x["name"] for x in ha.get.labels()["labels"]]
     assert "Attic" in [a["name"] for a in ha.get.areas()["areas"]]
-    with pytest.raises(StudioHaysError, match="label 'aquarium' already exists"):
+    with pytest.raises(StudioHaysError, match="name 'aquarium' is already used by label 'Aquarium'"):
         ha.create.label("aquarium")
 
 
@@ -794,3 +794,101 @@ def test_ambiguous_names_show_ids_and_names(home):
                              "area_id": None, "labels": []}
     with pytest.raises(StudioHaysError, match=r"dev-2 \(Reading Lamp\), dev-plug \(Reading Lamp\)"):
         Client().get.device("reading lamp")
+
+
+# STU-15: HA 2026.9 drift ---------------------------------------------------------------
+
+def test_service_errors_carry_home_assistants_reason(fake):
+    with pytest.raises(RemoteError, match=r"HTTP 400 for POST /api/services/homeassistant/update_area: "
+                                          r"Service homeassistant.update_area not found"):
+        Client().call.service("homeassistant", "update_area", area_id="hallwat", name="Hallway")
+
+
+def test_response_only_service_needs_return_response(fake):
+    ha = Client()
+    with pytest.raises(RemoteError, match="requires responses but caller did not ask for responses"):
+        ha.call.service("weather", "get_forecasts", entity_id="weather.home", type="daily")
+    result = ha.call.service(
+        "weather", "get_forecasts", return_response=True, entity_id="weather.home", type="daily"
+    )
+    assert result == {
+        "service": "weather.get_forecasts",
+        "changed_entities": [],
+        "response": {"weather.home": {"forecast": [{"condition": "sunny"}]}},
+    }
+    assert fake.calls[-1] == (
+        "POST", "/api/services/weather/get_forecasts", {"entity_id": "weather.home", "type": "daily"}
+    )
+
+
+def test_update_area_renames_and_assigns_a_floor(home):
+    ha = Client()
+    result = ha.update.area("Guest bedroom", name="Guest Room", floor="main")
+    assert result["changes"] == {
+        "name": {"was": "Guest bedroom", "is": "Guest Room"},
+        "floor_id": {"was": "upstairs", "is": "main"},
+    }
+    assert updates(home) == [(
+        "config/area_registry/update",
+        {"area_id": "guest_bedroom", "name": "Guest Room", "floor_id": "main"},
+    )]
+    areas = {a["area_id"]: a for a in ha.get.areas()["areas"]}
+    assert areas["guest_bedroom"]["name"] == "Guest Room" and areas["guest_bedroom"]["floor"] == "Main"
+
+
+def test_update_area_dry_run_and_clearing_the_floor(home):
+    ha = Client()
+    result = ha.update.area("kitchen", floor="", dry_run=True)
+    assert result["changes"] == {"floor_id": {"was": "main", "is": None}}
+    assert updates(home) == []
+    ha.update.area("kitchen", floor="")
+    assert home.areas["kitchen"]["floor_id"] is None
+
+
+@pytest.mark.parametrize("taken", ["Living Room", "living room", "LivingRoom"])
+def test_update_area_rejects_a_name_another_area_normalizes_to(home, taken):
+    with pytest.raises(StudioHaysError, match="already used by area 'Living Room'"):
+        Client().update.area("kitchen", name=taken)
+    assert updates(home) == []
+
+
+def test_update_area_unknown_floor_lists_known_floors(home):
+    with pytest.raises(NotFoundError, match=r"unknown floor 'Attic' — known: Main, Upstairs"):
+        Client().update.area("kitchen", floor="Attic")
+
+
+def test_create_area_uses_the_same_normalized_uniqueness(home):
+    with pytest.raises(StudioHaysError, match="already used by area 'Living Room'"):
+        Client().create.area("livingroom")
+
+
+def test_cli_update_area_dry_run(home, capsys):
+    code, out = run_cli(capsys, "ha", "update", "area", "Guest bedroom", "--floor", "Main", "--dry-run")
+    assert code == 0 and out["changes"] == {"floor_id": {"was": "upstairs", "is": "main"}}
+
+
+def test_update_area_rejects_blank_names_naming_the_area(home):
+    with pytest.raises(StudioHaysError, match="area kitchen: the name can't be blank"):
+        Client().update.area("kitchen", name="   ")
+
+
+def test_normalization_matches_home_assistant(home):
+    ha = Client()
+    # HA 2026.9 only casefolds and drops spaces: punctuation keeps names distinct
+    assert ha.update.area("kitchen", name="Living-Room", dry_run=True)["changes"]
+    with pytest.raises(StudioHaysError, match="pick a distinct name"):
+        ha.update.area("kitchen", name="LIVING  room")
+
+
+def test_cli_call_with_return_response(fake, capsys):
+    code, out = run_cli(
+        capsys, "ha", "call", "weather", "get_forecasts",
+        "--data", '{"entity_id": "weather.home"}', "--return-response",
+    )
+    assert code == 0 and out["response"] == {"weather.home": {"forecast": [{"condition": "sunny"}]}}
+
+
+def test_return_response_inside_service_data_is_a_readable_error(fake, capsys):
+    code, out = run_cli(capsys, "ha", "call", "weather", "get_forecasts",
+                        "--data", '{"return_response": true}')
+    assert code == 1 and "return_response is a call option, not service data" in out["error"]

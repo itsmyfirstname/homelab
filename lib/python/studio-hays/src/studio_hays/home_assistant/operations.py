@@ -5,6 +5,7 @@ Names follow ``<namespace>_<method>`` (checked by the contract suite);
 """
 
 from ..core import Operation, Param
+from .client import service_data
 
 FRESH = Param("fresh", schema_type="boolean", default=False, description="refresh from Home Assistant first")
 DOMAIN = Param("domain", description='entity domain, e.g. "light" or "sensor"')
@@ -116,8 +117,13 @@ OPERATIONS: tuple[Operation, ...] = (
             Param("domain", required=True, positional=True, description='service domain, e.g. "light"'),
             Param("service", required=True, positional=True, description='service name, e.g. "turn_on"'),
             Param("data", schema_type="object", description="service data, including entity_id"),
+            Param("return_response", schema_type="boolean", default=False,
+                  description="required by response-only services (e.g. weather.get_forecasts); "
+                              "returns their data under 'response'"),
         ),
-        handler=lambda c, domain, service, data=None: c.call.service(domain, service, **(data or {})),
+        handler=lambda c, domain, service, data=None, return_response=False: c.call.service(
+            domain, service, return_response=return_response, **service_data(data)
+        ),
         cli=("call",),
     ),
     Operation(
@@ -145,6 +151,21 @@ OPERATIONS: tuple[Operation, ...] = (
         params=(DEVICE, NAME, MOVE_AREA, ADD_LABELS, REMOVE_LABELS, DRY_RUN),
         handler=lambda c, **kw: c.update.device(**kw),
         cli=("update", "device"),
+    ),
+    Operation(
+        "update_area",
+        "update",
+        "area",
+        "Rename an area and/or assign it to a floor (floor=\"\" clears it). Area names must be "
+        "unique after Home Assistant's normalization (case and spaces ignored). " + MUTATING,
+        params=(
+            Param("area", required=True, positional=True, description="area name or id"),
+            Param("name", description="the area's new name"),
+            Param("floor", description='floor name or id; "" clears the floor'),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.update.area(**kw),
+        cli=("update", "area"),
     ),
     Operation(
         "update_repurpose_device",
@@ -181,7 +202,8 @@ OPERATIONS: tuple[Operation, ...] = (
         "create_area",
         "create",
         "area",
-        "Create an area (no floor assignment). " + MUTATING,
+        "Create an area (assign its floor with update_area). Area names must be unique after "
+        "Home Assistant's normalization (case and spaces ignored). " + MUTATING,
         params=(Param("name", required=True, positional=True, description="area name"), DRY_RUN),
         handler=lambda c, **kw: c.create.area(**kw),
         cli=("create", "area"),

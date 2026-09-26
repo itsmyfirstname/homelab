@@ -27,6 +27,7 @@ from ..core import (
     NotFoundError,
     RemoteError,
     StateNamespace,
+    StudioHaysError,
 )
 
 RESOURCE = "entity"
@@ -41,6 +42,31 @@ REGISTRIES = (
 )
 
 _ID_FIELDS = {kind: id_field for kind, _, id_field in REGISTRIES}
+
+
+REASON_LIMIT = 300
+
+
+def service_data(data: Mapping[str, object] | None) -> dict[str, object]:
+    """Service data for ``call.service(**data)``; ``return_response`` is a call
+    option (it selects ``?return_response``), not a data key."""
+    data = dict(data or {})
+    if "return_response" in data:
+        raise StudioHaysError(
+            "return_response is a call option, not service data — pass it as its own argument"
+        )
+    return data
+
+
+def _reason(resp: httpx.Response) -> str:
+    """HA's explanation of a failed request: its JSON ``message``, else the body."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    text = body.get("message") if isinstance(body, dict) and body.get("message") else resp.text
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= REASON_LIMIT else text[: REASON_LIMIT - 1] + "…"
 
 
 def _compact(state: Mapping) -> dict:
@@ -218,25 +244,39 @@ class _Call:
     def __init__(self, client: "Client") -> None:
         self._c = client
 
-    def service(self, domain: str, service: str, **data: object) -> dict:
-        """Fire a HA service (e.g. ``light.turn_on``); no state effect (Q-010)."""
+    def service(
+        self, domain: str, service: str, return_response: bool = False, **data: object
+    ) -> dict:
+        """Fire a HA service (e.g. ``light.turn_on``); no state effect (Q-010).
+
+        ``return_response=True`` is required by response-only services (e.g.
+        ``weather.get_forecasts``) and returns their data under ``response``.
+        """
         c = self._c
         name = f"{domain}.{service}"
-        changed = c._called(
+        reply = c._called(
             name,
-            {"data": data},
+            {"data": data, **({"return_response": True} if return_response else {})},
             lambda: c._request(
                 "POST",
                 f"/api/services/{domain}/{service}",
                 data,
                 missing=f"unknown service {name} (HTTP 404)",
+                params={"return_response": ""} if return_response else None,
             ),
         )
         c._dirty = True
-        return {
+        if isinstance(reply, dict):
+            changed, response = reply.get("changed_states") or [], reply.get("service_response")
+        else:
+            changed, response = reply or [], None
+        result: dict[str, Any] = {
             "service": name,
-            "changed_entities": [s["entity_id"] for s in changed or []],
+            "changed_entities": [s["entity_id"] for s in changed],
         }
+        if return_response:
+            result["response"] = response
+        return result
 
 
 class _State(StateNamespace):
@@ -290,12 +330,19 @@ class Client(BaseClient):
         )
 
     def _request(
-        self, method: str, path: str, json: Any = None, *, missing: str | None = None
+        self,
+        method: str,
+        path: str,
+        json: Any = None,
+        *,
+        missing: str | None = None,
+        params: Mapping[str, str] | None = None,
     ) -> Any:
-        """One HA REST call. A 404 raises ``NotFoundError(missing)`` when given."""
+        """One HA REST call. A 404 raises ``NotFoundError(missing)`` when given;
+        any other failure carries HA's own reason."""
         http = cast(httpx.Client, self.transport)
         try:
-            resp = http.request(method, path, json=json)
+            resp = http.request(method, path, json=json, params=params)
         except httpx.HTTPError as exc:
             raise RemoteError(f"cannot reach Home Assistant at {self._host()}: {exc}") from exc
         if resp.status_code == 401:
@@ -306,8 +353,10 @@ class Client(BaseClient):
         if resp.status_code == 404 and missing is not None:
             raise NotFoundError(missing)
         if not resp.is_success:
+            reason = _reason(resp)
             raise RemoteError(
                 f"Home Assistant returned HTTP {resp.status_code} for {method} {path}"
+                + (f": {reason}" if reason else "")
             )
         if not resp.content:
             return None
@@ -358,6 +407,12 @@ class Client(BaseClient):
     def _apply_step(self, step: dict, dry_run: bool = False) -> dict:
         """Dry-run or send one planned registry step (``writes._step``)."""
         current, fields = step["current"], step["fields"]
+        if step["action"] == "update_area":
+            return self._apply_update(
+                "area", current["area_id"], current, fields, dry_run,
+                "config/area_registry/update", {"area_id": current["area_id"]},
+                subject={"area_id": current["area_id"]},
+            )
         if step["action"] == "update_device":
             return self._apply_update(
                 "device", current["id"], current, fields, dry_run,

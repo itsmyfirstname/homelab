@@ -22,7 +22,7 @@ from websockets.sync.server import Server, ServerConnection, serve
 from .client import Client
 from .writes import slugify as slug
 
-HA_VERSION = "2026.7.2"
+HA_VERSION = "2026.9.3"
 
 
 class CommandError(Exception):
@@ -121,13 +121,28 @@ class FakeHomeAssistant:
                 state = self.states.get(path.removeprefix("/api/states/"))
                 return httpx.Response(200, json=state) if state else httpx.Response(404)
             if request.method == "POST" and path.startswith("/api/services/"):
-                return self._service(path, body)
+                return self._service(path, body, "return_response" in request.url.params)
         return httpx.Response(404)
 
-    def _service(self, path: str, body: Any) -> httpx.Response:
+    def _service(self, path: str, body: Any, return_response: bool) -> httpx.Response:
+        """HA 2026.9 semantics: unknown services are a 400 with a message;
+        response-only services need ``?return_response`` and others reject it."""
         domain, _, service = path.removeprefix("/api/services/").partition("/")
+        if (domain, service) == ("weather", "get_forecasts"):
+            if not return_response:
+                return _bad_request(
+                    "Service call requires responses but caller did not ask for responses. "
+                    "Add ?return_response to query parameters."
+                )
+            ids = (body or {}).get("entity_id")
+            forecasts = {eid: {"forecast": [{"condition": "sunny"}]} for eid in [ids] if eid}
+            return httpx.Response(200, json={"changed_states": [], "service_response": forecasts})
         if domain != "light" or service not in ("turn_on", "turn_off"):
-            return httpx.Response(400)
+            return _bad_request(f"Service {domain}.{service} not found.")
+        if return_response:
+            return _bad_request(
+                "Service does not support responses. Remove return_response from request."
+            )
         ids = (body or {}).get("entity_id")
         changed = []
         for eid in [ids] if isinstance(ids, str) else ids or []:
@@ -185,6 +200,8 @@ class FakeHomeAssistant:
             return {"entity_entry": self._update_entry(p)}
         if kind == "config/device_registry/update":
             return self._update_device(p)
+        if kind == "config/area_registry/update":
+            return self._update_area(p)
         if kind == "config/area_registry/create":
             return self._create(self.areas, "area_id", p["name"], _area)
         if kind == "config/label_registry/create":
@@ -222,9 +239,19 @@ class FakeHomeAssistant:
         self._sync_friendly_names()
         return dict(device)
 
+    def _update_area(self, p: dict) -> dict:
+        area = self.areas.get(p["area_id"])
+        if area is None:
+            raise CommandError("not_found", "Area ID doesn't exist")
+        if "name" in p:
+            _check_unique(self.areas, "area_id", p["name"], exclude=area["area_id"])
+            area["name"] = p["name"]
+        if "floor_id" in p:
+            area["floor_id"] = p["floor_id"]
+        return dict(area)
+
     def _create(self, table: dict, id_key: str, name: str, shape: Any) -> dict:
-        if any(row["name"].lower() == name.lower() for row in table.values()):
-            raise CommandError("invalid_info", f"The name {name} is already in use")
+        _check_unique(table, id_key, name)
         row = shape({id_key: slug(name), "name": name})
         table[row[id_key]] = row
         return dict(row)
@@ -245,6 +272,23 @@ class FakeHomeAssistant:
             else:
                 name = entry.get("original_name")
             state.setdefault("attributes", {})["friendly_name"] = name
+
+
+def _bad_request(message: str) -> httpx.Response:
+    return httpx.Response(400, json={"message": message})
+
+
+def _ha_normalize(name: str) -> str:
+    """HA 2026.9's registry-name normalization, kept independent of the client's
+    own copy so a wrong client normalization can't pass by construction."""
+    return name.casefold().replace(" ", "")
+
+
+def _check_unique(table: dict, id_key: str, name: str, exclude: str | None = None) -> None:
+    wanted = _ha_normalize(name)
+    for row in table.values():
+        if row[id_key] != exclude and _ha_normalize(row["name"]) == wanted:
+            raise CommandError("invalid_info", f"The name {name} ({wanted}) is already in use")
 
 
 def _copy(obj: Mapping) -> dict:

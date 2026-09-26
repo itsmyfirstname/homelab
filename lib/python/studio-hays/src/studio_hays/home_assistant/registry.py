@@ -16,6 +16,12 @@ def _index(store: StateStore, resource_type: str) -> dict[str, dict]:
     return {r["id"]: r["attributes"] for r in store.get_snapshot(resource_type)}
 
 
+def normalize_name(name: str) -> str:
+    """HA's registry name normalization (2026.9): names that normalize equal
+    collide ("Hallway" vs "hallway" vs "Hall way"; "Hall-way" stays distinct)."""
+    return name.casefold().replace(" ", "")
+
+
 def device_name(device: Mapping) -> str:
     return device.get("name_by_user") or device.get("name") or device["id"]
 
@@ -95,6 +101,9 @@ class Registry:
 
     def area(self, ref: str) -> dict:
         return _resolve("area", ref, self.areas.values(), "area_id", lambda a: [a["name"]])
+
+    def floor(self, ref: str) -> dict:
+        return _resolve("floor", ref, self.floors.values(), "floor_id", lambda f: [f["name"]])
 
     def label(self, ref: str) -> dict:
         return _resolve("label", ref, self.labels.values(), "label_id", lambda x: [x["name"]])
