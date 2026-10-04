@@ -4,7 +4,7 @@ Issues and specs for this repo live in Linear, team **Studiohays** (issue key `S
 
 ## Conventions
 
-- **Create an issue**: `save_issue` with `team: "Studiohays"`, `title` and a Markdown `description` (real newlines, not `\n`). New issues start in **Backlog** unless a skill says otherwise.
+- **Create an issue**: `save_issue` with `team: "Studiohays"`, `title`, a Markdown `description` (real newlines, not `\n`), and `addLabels: ["homelab"]` (the git repo name; create that Linear label if it is missing). New issues start in **Backlog** unless a skill says otherwise.
 - **Read an issue**: `get_issue` with the identifier (e.g. `STU-5`) and `includeRelations: true`, then `list_comments` with `issueId`.
 - **List issues**: `list_issues` with `team: "Studiohays"`, filtered by `label`, `state`, `project` or `query`.
 - **Comment**: `save_comment` with `issueId` and `body`.
@@ -21,7 +21,7 @@ Refer to issues by their Linear identifier (`STU-<n>`). Put it in commit message
 
 ## When a skill says "publish to the issue tracker"
 
-Create a Linear issue in team Studiohays with `save_issue`.
+Create a Linear issue in team Studiohays with `save_issue`, including `addLabels: ["homelab"]`.
 
 ## When a skill says "fetch the relevant ticket"
 
