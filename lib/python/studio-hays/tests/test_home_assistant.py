@@ -176,6 +176,63 @@ def test_failed_service_call_raises_and_is_audited(fake):
     assert [op["ok"] for op in ha.state.history()["ops"] if op["op"] == "call"] == [False]
 
 
+# set_state (STU-21) ----------------------------------------------------------------
+
+def test_set_state_simulates_and_next_read_sees_it(fake):
+    ha = Client()
+    assert ha.get.entity("sensor.hall_temp")["entity"]["state"] == "21.5"
+
+    result = ha.call.set_state("sensor.hall_temp", "18.0")
+    assert result["dry_run"] is False
+    assert result["before"]["state"] == "21.5"
+    assert result["after"]["state"] == "18.0"
+    assert fake.states["sensor.hall_temp"]["state"] == "18.0"
+    assert fake.calls[-1][:2] == ("POST", "/api/states/sensor.hall_temp")
+    assert ha.get.entity("sensor.hall_temp")["entity"]["state"] == "18.0"
+    (op,) = [o for o in ha.state.history()["ops"] if o["op"] == "update" and o["id"] == "sensor.hall_temp"]
+    assert op["ok"]
+
+
+def test_set_state_dry_run_does_not_touch_ha(fake):
+    ha = Client()
+    ha.get.entity("sensor.hall_temp")
+    posts = [c for c in fake.calls if c[0] == "POST"]
+    result = ha.call.set_state("sensor.hall_temp", "18.0", dry_run=True)
+    assert result["dry_run"] is True
+    assert result["after"]["state"] == "18.0"
+    assert fake.states["sensor.hall_temp"]["state"] == "21.5"
+    assert [c for c in fake.calls if c[0] == "POST"] == posts
+    assert not any(o["op"] == "update" for o in ha.state.history()["ops"])
+
+
+def test_set_state_keeps_attributes_unless_replaced(fake):
+    ha = Client()
+    kept = ha.call.set_state("sensor.hall_temp", "18.0")
+    assert kept["after"]["attributes"] == {"friendly_name": "Hallway Temperature"}
+    assert fake.states["sensor.hall_temp"]["attributes"]["friendly_name"] == "Hallway Temperature"
+
+    replaced = ha.call.set_state(
+        "sensor.hall_temp", "on", attributes={"device_class": "occupancy"}
+    )
+    assert replaced["after"]["attributes"] == {"device_class": "occupancy"}
+    assert fake.states["sensor.hall_temp"]["attributes"] == {"device_class": "occupancy"}
+
+
+def test_set_state_unknown_entity_is_not_found(fake):
+    with pytest.raises(NotFoundError, match="sensor.nope"):
+        Client().call.set_state("sensor.nope", "on")
+    assert not any(c[0] == "POST" and "/api/states/" in c[1] for c in fake.calls)
+
+
+def test_failed_set_state_is_audited(fake):
+    ha = Client()
+    ha.get.entity("sensor.hall_temp")
+    fake.status_override = 500
+    with pytest.raises(RemoteError, match="HTTP 500"):
+        ha.call.set_state("sensor.hall_temp", "on")
+    assert [o["ok"] for o in ha.state.history()["ops"] if o["op"] == "update"] == [False]
+
+
 # state verbs ----------------------------------------------------------------------
 
 def test_drift_reports_identity_changes_not_volatile_ones(fake):
@@ -251,6 +308,12 @@ def test_cli_call_service_with_json_data(fake, capsys):
     }
 
 
+def test_cli_set_state(fake, capsys):
+    code, out = run_cli(capsys, "ha", "set-state", "sensor.hall_temp", "18.0")
+    assert code == 0 and out["after"]["state"] == "18.0"
+    assert Client().get.entity("sensor.hall_temp")["entity"]["state"] == "18.0"
+
+
 def test_cli_state_verbs_and_legacy_op_names(fake, capsys):
     code, out = run_cli(capsys, "ha", "state", "refresh")
     assert code == 0 and out["counts"]["entity"] == 4
@@ -293,8 +356,10 @@ def test_mcp_tools_are_generated_from_the_registry(fake):
 
     by_name = mcp_session(tools)
     # doc 00 success criterion 4
-    assert {"ha_list_entities", "ha_get_entity", "ha_refresh", "ha_drift"} <= set(by_name)
+    assert {"ha_list_entities", "ha_get_entity", "ha_refresh", "ha_drift", "ha_set_state"} <= set(by_name)
     assert "ha_call_service" in by_name and "Mutating" in by_name["ha_call_service"].description
+    assert "simulat" in by_name["ha_set_state"].description.lower()
+    assert "dry_run" in by_name["ha_set_state"].input_schema["properties"]
     schema = by_name["ha_get_entity"].input_schema
     assert schema["required"] == ["entity_id"]
     assert set(schema["properties"]) == {"entity_id", "fresh"}

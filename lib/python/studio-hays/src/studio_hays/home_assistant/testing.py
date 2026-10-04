@@ -127,9 +127,13 @@ class FakeHomeAssistant:
         with self._lock:
             if request.method == "GET" and path == "/api/states":
                 return httpx.Response(200, json=list(self.states.values()))
-            if request.method == "GET" and path.startswith("/api/states/"):
-                state = self.states.get(path.removeprefix("/api/states/"))
-                return httpx.Response(200, json=state) if state else httpx.Response(404)
+            if path.startswith("/api/states/") and path != "/api/states/":
+                eid = path.removeprefix("/api/states/")
+                if request.method == "GET":
+                    state = self.states.get(eid)
+                    return httpx.Response(200, json=state) if state else httpx.Response(404)
+                if request.method == "POST":
+                    return self._set_state(eid, body)
             if path.startswith(AUTOMATION_CONFIG):
                 return self._automation_config(request.method, path.removeprefix(AUTOMATION_CONFIG), body)
             if request.method == "GET" and path == "/api/services":
@@ -183,6 +187,23 @@ class FakeHomeAssistant:
             "last_changed": "2026-09-26T00:00:00+00:00",
             "last_updated": "2026-09-26T00:00:00+00:00",
         }
+
+    def _set_state(self, entity_id: str, body: Any) -> httpx.Response:
+        """REST POST /api/states/<id>: simulate a state until the device reports."""
+        if not isinstance(body, dict) or "state" not in body:
+            return _bad_request("state not specified")
+        current = self.states.get(entity_id) or {}
+        attributes = body["attributes"] if "attributes" in body else current.get("attributes") or {}
+        now = "2026-09-26T21:42:00+00:00"
+        state = {
+            "entity_id": entity_id,
+            "state": str(body["state"]),
+            "attributes": dict(attributes),
+            "last_changed": now,
+            "last_updated": now,
+        }
+        self.states[entity_id] = state
+        return httpx.Response(200, json=state)
 
     def _service(self, path: str, body: Any, return_response: bool) -> httpx.Response:
         """HA 2026.9 semantics: unknown services are a 400 with a message;

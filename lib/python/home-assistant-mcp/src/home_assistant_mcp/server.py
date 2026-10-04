@@ -297,3 +297,22 @@ def call_service(
     return _run(lambda c: c.call.service(
         domain, service, return_response=return_response, **checked_service_data(service_data)
     ))
+
+
+@mcp.tool(description=(
+    "Simulate an entity's state in Home Assistant's state machine. Does not "
+    "command the device — the value lasts until the integration reports again. "
+    "Fires state_changed, so state-based automations run (the point of this "
+    "tool: force a binary_sensor occupancy on/off without walking past it). "
+    "Omit attributes to keep the current ones; passing attributes replaces them. "
+    "Mutating: audited. Pass dry_run=true first to see exactly what would change."
+))
+def set_state(
+    entity_id: str,
+    state: str,
+    attributes: dict | None = None,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.call.set_state(
+        entity_id, state, dry_run=dry_run, **_given(attributes=attributes),
+    ))

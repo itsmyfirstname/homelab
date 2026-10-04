@@ -148,6 +148,24 @@ OPERATIONS: tuple[Operation, ...] = (
         cli=("call",),
     ),
     Operation(
+        "call_set_state",
+        "call",
+        "",
+        "Simulate an entity's state in Home Assistant's state machine. Does not "
+        "command the device — the value lasts until the integration reports again. "
+        "Fires state_changed, so state-based automations run. Omit attributes to "
+        "keep the current ones. Mutating: audited. Pass dry_run=true to preview.",
+        params=(
+            Param("entity_id", required=True, positional=True, description='e.g. "binary_sensor.occupancy"'),
+            Param("state", required=True, positional=True, description='simulated state, e.g. "on"'),
+            Param("attributes", schema_type="object", description="replace attributes; omit to keep current"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.call.set_state(**kw),
+        cli=("set-state",),
+        tool="set_state",
+    ),
+    Operation(
         "update_entity",
         "update",
         "entity",

@@ -67,6 +67,15 @@ the core before a third module multiplies the pain.
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).
 
+### STU-21 notes
+
+- **`call.set_state(entity_id, state, attributes=, dry_run=)`** simulates a
+  state via REST `POST /api/states/<id>` (there is no `homeassistant.set_state`
+  service). It does **not** command the device — the value lasts until the
+  integration reports again — but it does fire `state_changed`, so state
+  triggers run. Omitted `attributes` keeps the current ones. Mutating, audited,
+  write-through. MCP tool: `set_state`.
+
 ### STU-16…19 notes
 
 - **Automations** (`get.automations/automation`, `update.automation`,

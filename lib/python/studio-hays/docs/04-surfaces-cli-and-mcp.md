@@ -59,6 +59,7 @@ studio-hays ha save automation --config '{…}' [--automation-id ID] [--dry-run]
 studio-hays ha delete automation <automation_id> [--dry-run]
 studio-hays ha query <text> [--domain D]
 studio-hays ha call <domain> <service> [--data '{"k":"v"}'] [--return-response]
+studio-hays ha set-state <entity_id> <state> [--attributes '{…}'] [--dry-run]
 studio-hays ha state refresh
 studio-hays ha state drift
 studio-hays ha state show [--type entity] [--id ID]

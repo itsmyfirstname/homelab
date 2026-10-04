@@ -110,6 +110,7 @@ ha.delete.automation("hallway_nightlight_wakeup")
 
 ha.call.service("light", "turn_on", entity_id="light.kitchen")
 ha.call.service("switch", "toggle", entity_id="switch.garage")
+ha.call.set_state("binary_sensor.occupancy", "on", dry_run=True)  # simulate; does not command
 
 ha.state.refresh()
 ha.state.drift()                        # added/removed/changed report

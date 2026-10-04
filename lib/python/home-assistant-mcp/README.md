@@ -99,6 +99,15 @@ entities (their `id` attribute is the `automation_id`). `save_automation` create
 through `/api/config/automation/config/{id}` after Home Assistant validates the config
 (`dry_run=true` validates only); HA reloads automations itself. Save and delete are mutating.
 
+### `set_state(entity_id, state, attributes?, dry_run=false)`
+
+Simulate an entity's state in Home Assistant's state machine. **Does not command
+the device** — the value lasts until the integration reports again. Fires
+`state_changed`, so state-based automations run (use this to force a
+`binary_sensor` occupancy on/off without walking past it). Omit `attributes` to
+keep the current ones; passing `attributes` replaces them. Mutating; audited.
+`dry_run=true` previews `before`/`after` without posting.
+
 ### `call_service(domain, service, service_data?, return_response=false)`
 
 Fires a service and returns `targets` (what you asked for) and `changed_entities` (what HA
@@ -141,6 +150,7 @@ waits for the initial sync.
   removed entities disappear), plus an audit log of refreshes and service calls. It is disposable —
   delete the file and the next call rebuilds it.
 - `call_service` doesn't write the cache; it invalidates it, so the next read refreshes.
+- `set_state` write-throughs the simulated state (and invalidates), so the next `get_entity` sees it.
 
 ## Test
 

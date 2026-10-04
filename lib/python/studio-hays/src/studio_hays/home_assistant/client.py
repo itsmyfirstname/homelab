@@ -7,6 +7,7 @@ mirror as ``registry_entry`` (keyed by the stable registry id), ``device``,
 never synced (errors propagate) or is stale (best-effort: a failed refresh
 serves cached data with ``stale: true``). Service calls have no state effect
 (Q-010) but invalidate the snapshot so the next read refreshes.
+``call.set_state`` is the exception: it write-throughs a simulated state.
 """
 
 from __future__ import annotations
@@ -306,6 +307,53 @@ class _Call:
         if return_response:
             result["response"] = response
         return result
+
+    def set_state(
+        self,
+        entity_id: str,
+        state: str,
+        attributes: Mapping[str, object] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Simulate an entity's state (does not command the device).
+
+        POSTs ``/api/states/<entity_id>``. The value lasts until the
+        integration reports again; ``state_changed`` still fires, so
+        state-based automations run. Omitted ``attributes`` keeps the
+        current ones; a passed dict replaces them.
+        """
+        c = self._c
+        with c._sync_lock:
+            c._sync()
+            rows = c.store.get_snapshot(RESOURCE, entity_id)
+            if not rows:
+                raise NotFoundError(
+                    f"entity not found: {entity_id} — run state.refresh() if it exists on the remote"
+                )
+            before = rows[0]["attributes"]
+            new_attrs = dict(attributes) if attributes is not None else dict(before.get("attributes") or {})
+            predicted_state = {**before, "state": str(state), "attributes": new_attrs}
+            result: dict[str, Any] = {
+                "entity_id": entity_id,
+                "dry_run": dry_run,
+                "before": before,
+                "after": predicted_state,
+            }
+            if dry_run:
+                return result
+
+            def send() -> dict:
+                return c._request(
+                    "POST",
+                    f"/api/states/{entity_id}",
+                    {"state": state, "attributes": new_attrs},
+                )
+
+            result["after"] = c._updated(
+                RESOURCE, entity_id, {"state": str(state), "attributes": new_attrs}, send
+            )
+            c._dirty = True
+            return result
 
 
 def _ids(value: object) -> list[str]:

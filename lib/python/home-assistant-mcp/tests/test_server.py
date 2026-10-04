@@ -274,3 +274,20 @@ def test_call_service_reports_targets_and_async_note(home):
                                         "service_data": {"entity_id": "light.kitchen"}}))
     assert out["targets"] == ["light.kitchen"] and out["changed_entities"] == []
     assert "verify with get_entity" in out["note"]
+
+
+# STU-21: set_state -----------------------------------------------------------------
+
+def test_set_state_tool_simulates_without_commanding_the_device(home):
+    tool = tools()["set_state"]
+    desc = tool.description or ""
+    assert "simulat" in desc.lower() and "not command" in desc.lower()
+    assert "Mutating" in desc and "dry_run" in tool.input_schema["properties"]
+
+    plan = payload(call("set_state", {"entity_id": "sensor.hall_temp", "state": "18.0", "dry_run": True}))
+    assert plan["dry_run"] is True and home.states["sensor.hall_temp"]["state"] == "21.5"
+
+    out = payload(call("set_state", {"entity_id": "sensor.hall_temp", "state": "18.0"}))
+    assert out["after"]["state"] == "18.0"
+    assert payload(call("get_entity", {"entity_id": "sensor.hall_temp"}))["state"] == "18.0"
+    assert home.states["sensor.hall_temp"]["attributes"]["friendly_name"] == "Hallway Temperature"
