@@ -291,6 +291,10 @@ class FakeHomeAssistant:
             return self._create(self.areas, "area_id", p["name"], _area)
         if kind == "config/label_registry/create":
             return self._create(self.labels, "label_id", p["name"], _label)
+        if kind == "config/floor_registry/create":
+            return self._create_floor(p)
+        if kind == "config/floor_registry/update":
+            return self._update_floor(p)
         if kind == "validate_config":
             return _validate_config(p)
         if kind == "search/related":
@@ -352,6 +356,29 @@ class FakeHomeAssistant:
         row = shape({id_key: slug(name), "name": name})
         table[row[id_key]] = row
         return dict(row)
+
+    def _create_floor(self, p: dict) -> dict:
+        _check_unique(self.floors, "floor_id", p["name"])
+        row = {
+            "floor_id": slug(p["name"]),
+            "name": p["name"],
+            "level": p.get("level"),
+            "aliases": [],
+            "icon": None,
+        }
+        self.floors[row["floor_id"]] = row
+        return dict(row)
+
+    def _update_floor(self, p: dict) -> dict:
+        floor = self.floors.get(p["floor_id"])
+        if floor is None:
+            raise CommandError("not_found", "Floor ID doesn't exist")
+        if "name" in p:
+            _check_unique(self.floors, "floor_id", p["name"], exclude=floor["floor_id"])
+            floor["name"] = p["name"]
+        if "level" in p:
+            floor["level"] = p["level"]
+        return dict(floor)
 
     def _sync_friendly_names(self) -> None:
         """Mimic HA: a state's friendly_name follows its registry naming."""

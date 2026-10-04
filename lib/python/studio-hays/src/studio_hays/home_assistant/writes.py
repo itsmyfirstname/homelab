@@ -107,6 +107,22 @@ def _ensure_unique_name(
             )
 
 
+def plan_floor(
+    reg: Registry, floor: str, *, name: Any = UNSET, level: Any = UNSET
+) -> tuple[dict, dict]:
+    """(current floor, fields for ``config/floor_registry/update``)."""
+    current = reg.floor(floor)
+    fields: dict[str, Any] = {}
+    if name is not UNSET:
+        if not name or not str(name).strip():
+            raise StudioHaysError(f"floor {current['floor_id']}: the name can't be blank")
+        _ensure_unique_name("floor", reg.floors.values(), name, exclude=current["floor_id"])
+        _set(fields, "name", name, current.get("name"))
+    if level is not UNSET:
+        _set(fields, "level", level, current.get("level"))
+    return current, fields
+
+
 def plan_area(
     reg: Registry, area: str, *, name: Any = UNSET, floor: Any = UNSET
 ) -> tuple[dict, dict]:
@@ -290,6 +306,16 @@ class Update:
         current, fields = plan_area(Registry(c.store), area, name=name, floor=floor)
         return c._apply_step(_step("update_area", current["area_id"], current, fields), dry_run)
 
+    @_serialized
+    def floor(
+        self, floor: str, name: Any = UNSET, level: Any = UNSET, dry_run: bool = False
+    ) -> dict:
+        """Rename a floor and/or set its sort level."""
+        c = self._c
+        c._sync()
+        current, fields = plan_floor(Registry(c.store), floor, name=name, level=level)
+        return c._apply_step(_step("update_floor", current["floor_id"], current, fields), dry_run)
+
 
     @_serialized
     def automation(
@@ -410,7 +436,7 @@ class Delete:
 
 
 class Create:
-    """``ha.create``: new labels and areas. Mutating unless ``dry_run=True``."""
+    """``ha.create``: new labels, areas and floors. Mutating unless ``dry_run=True``."""
 
     def __init__(self, client: "Client") -> None:
         self._c = client
@@ -420,6 +446,23 @@ class Create:
 
     def area(self, name: str, dry_run: bool = False) -> dict:
         return self._create("area", name, dry_run)
+
+    @_serialized
+    def floor(self, name: str, level: int, dry_run: bool = False) -> dict:
+        """Create a floor (``level`` is HA's sort order, 0 = lowest)."""
+        c = self._c
+        c._sync()
+        _ensure_unique_name("floor", Registry(c.store).floors.values(), name)
+        desired = {"name": name, "level": level}
+        if dry_run:
+            return {"dry_run": True, "before": None, "after": desired}
+
+        def send() -> dict:
+            with c._ws() as session:
+                return session.call("config/floor_registry/create", name=name, level=level)
+
+        after = c._created("floor", desired, send, manage=False)
+        return {"dry_run": False, "before": None, "after": after}
 
     @_serialized
     def _create(self, kind: str, name: str, dry_run: bool) -> dict:

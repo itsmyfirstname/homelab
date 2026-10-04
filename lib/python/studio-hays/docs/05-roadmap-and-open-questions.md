@@ -67,6 +67,14 @@ the core before a third module multiplies the pain.
   `-v`, `--fresh` as a global), `state drift --strict` / exit 3, and
   `state.show(resource_type=…)` (HA has one resource type).
 
+### STU-13 notes
+
+- **`create.floor(name, level)` / `update.floor(floor, name=, level=)`** — WS
+  `config/floor_registry/create|update`, dry_run, mirror write-through, same
+  normalized name uniqueness as areas. MCP: `create_floor` / `update_floor`.
+  House data (rename Main/Upstairs, assign unfloored areas, retire floor labels)
+  is a live cutover on top of these ops, not part of the library change.
+
 ### STU-21 notes
 
 - **`call.set_state(entity_id, state, attributes=, dry_run=)`** simulates a
@@ -138,7 +146,7 @@ unchanged. Three gaps, fixed additively:
   refreshes by one reentrant lock.
 - **Labels in reads**: the `label` filter matches the entity's or its
   device's labels; `get_entity` reports both (`labels`, `device_labels`).
-- **Floors are read-only**; the floor-label cleanup is STU-13.
+- **Floors** were read-only in M2.1; create/update (and the label cleanup) are STU-13.
 - **Test harness**: `studio_hays.home_assistant.testing.FakeHomeAssistant`
   (REST via MockTransport + a real local WebSocket server), shared with
   `home-assistant-mcp`'s tests.

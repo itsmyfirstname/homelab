@@ -100,6 +100,8 @@ ha.update.device("Reading Lamp", area="Living Room", add_labels=["first_floor"])
 ha.update.repurpose_device("Reading Lamp", area="Living Room", name="Aquarium Light",
                            add_labels=["first_floor"], remove_labels=["third_floor"])
 ha.create.label("Aquarium")
+ha.create.floor("Third Floor", level=2)
+ha.update.floor("Main", name="First Floor")
 ha.update.area("hallwat", name="Main Hallway", floor="Main")
 ha.delete.area("Old Room", dry_run=True)      # impact; force=True if still in use
 
@@ -121,7 +123,7 @@ ha.state.history(10)
 
 HA is **mirror mode** in v0. `update` / `create` edit HA's registries (names,
 areas, floors, labels) over the WebSocket API and write the result through to
-the mirror (M2.1, STU-6/15); `delete.area` removes an area (STU-18).
+the mirror (M2.1, STU-6/15/13); `delete.area` removes an area (STU-18).
 
 **Automations are the exception to "`get` is state only"** (STU-16): HA
 2026.9 keeps their config only behind its REST config view, so

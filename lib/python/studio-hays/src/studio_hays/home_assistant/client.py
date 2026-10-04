@@ -419,7 +419,7 @@ class Client(BaseClient):
         "device": ["name_by_user", "area_id", "labels"],
         "area": ["name", "floor_id"],
         "label": ["name"],
-        "floor": ["name"],
+        "floor": ["name", "level"],
     }
     staleness_window = 15.0
 
@@ -557,6 +557,12 @@ class Client(BaseClient):
                 "area", current["area_id"], current, fields, dry_run,
                 "config/area_registry/update", {"area_id": current["area_id"]},
                 subject={"area_id": current["area_id"]},
+            )
+        if step["action"] == "update_floor":
+            return self._apply_update(
+                "floor", current["floor_id"], current, fields, dry_run,
+                "config/floor_registry/update", {"floor_id": current["floor_id"]},
+                subject={"floor_id": current["floor_id"]},
             )
         if step["action"] == "update_device":
             return self._apply_update(

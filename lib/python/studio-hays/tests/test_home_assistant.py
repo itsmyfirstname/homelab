@@ -739,6 +739,43 @@ def test_create_label_and_area(home):
         ha.create.label("aquarium")
 
 
+def test_create_floor_write_throughs_name_and_level(home):
+    ha = Client()
+    result = ha.create.floor("Third Floor", level=2)
+    assert result["dry_run"] is False
+    assert result["after"]["name"] == "Third Floor"
+    assert result["after"]["level"] == 2
+    assert result["after"]["floor_id"] == "third_floor"
+    assert home.floors["third_floor"]["level"] == 2
+    assert updates(home) == [("config/floor_registry/create", {"name": "Third Floor", "level": 2})]
+    ha.update.area("kitchen", floor="Third Floor")
+    assert {a["area_id"]: a["floor"] for a in ha.get.areas()["areas"]}["kitchen"] == "Third Floor"
+
+
+def test_create_floor_dry_run_and_name_clash(home):
+    ha = Client()
+    plan = ha.create.floor("Third Floor", level=2, dry_run=True)
+    assert plan["dry_run"] is True and "third_floor" not in home.floors
+    with pytest.raises(StudioHaysError, match="already used by floor 'Main'"):
+        ha.create.floor("main", level=0)
+    assert updates(home) == []
+
+
+def test_update_floor_renames_and_sets_level(home):
+    ha = Client()
+    result = ha.update.floor("Upstairs", name="Second Floor", level=1)
+    assert result["changes"] == {"name": {"was": "Upstairs", "is": "Second Floor"}}
+    assert home.floors["upstairs"]["name"] == "Second Floor"
+    assert home.floors["upstairs"]["level"] == 1
+    assert updates(home) == [(
+        "config/floor_registry/update",
+        {"floor_id": "upstairs", "name": "Second Floor"},
+    )]
+    # level 1 was already 1, so it is not sent
+    areas = {a["area_id"]: a["floor"] for a in ha.get.areas()["areas"]}
+    assert areas["guest_bedroom"] == "Second Floor"
+
+
 def test_failed_registry_write_is_audited_and_state_untouched(home):
     ha = Client()
     before = ha.get.entity("switch.reading_lamp")["registry"]
@@ -957,6 +994,14 @@ def test_create_area_uses_the_same_normalized_uniqueness(home):
 def test_cli_update_area_dry_run(home, capsys):
     code, out = run_cli(capsys, "ha", "update", "area", "Guest bedroom", "--floor", "Main", "--dry-run")
     assert code == 0 and out["changes"] == {"floor_id": {"was": "upstairs", "is": "main"}}
+
+
+def test_cli_create_and_update_floor(home, capsys):
+    code, out = run_cli(capsys, "ha", "create", "floor", "Third Floor", "2")
+    assert code == 0 and out["after"]["floor_id"] == "third_floor"
+    code, out = run_cli(capsys, "ha", "update", "floor", "Main", "--name", "First Floor", "--dry-run")
+    assert code == 0 and out["changes"] == {"name": {"was": "Main", "is": "First Floor"}}
+    assert home.floors["main"]["name"] == "Main"
 
 
 def test_update_area_rejects_blank_names_naming_the_area(home):

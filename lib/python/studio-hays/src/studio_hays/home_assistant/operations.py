@@ -294,6 +294,36 @@ OPERATIONS: tuple[Operation, ...] = (
         cli=("create", "area"),
     ),
     Operation(
+        "create_floor",
+        "create",
+        "floor",
+        "Create a floor (level is HA's sort order, 0 = lowest). Floor names must be unique after "
+        "Home Assistant's normalization (case and spaces ignored). " + MUTATING,
+        params=(
+            Param("name", required=True, positional=True, description="floor name"),
+            Param("level", schema_type="integer", required=True, positional=True,
+                  description="sort level, 0 = lowest"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.create.floor(**kw),
+        cli=("create", "floor"),
+    ),
+    Operation(
+        "update_floor",
+        "update",
+        "floor",
+        "Rename a floor and/or set its sort level. Floor names must be unique after "
+        "Home Assistant's normalization (case and spaces ignored). " + MUTATING,
+        params=(
+            Param("floor", required=True, positional=True, description="floor name or id"),
+            Param("name", description="the floor's new name"),
+            Param("level", schema_type="integer", description="sort level, 0 = lowest"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.update.floor(**kw),
+        cli=("update", "floor"),
+    ),
+    Operation(
         "state_refresh",
         "state",
         "",

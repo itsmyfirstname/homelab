@@ -83,6 +83,7 @@ of its entity_ids) with its area, labels and entities.
 | `repurpose_device(device, area?, name?, add_labels?, remove_labels?, rename_entity_ids=false)` | device + the entity overrides/ids that mention its old name, step by step, stopping at the first failure |
 | `update_area(area, name?, floor?)` | rename an area / assign its floor (`floor=""` clears) |
 | `create_label(name)`, `create_area(name)` | a new label / area |
+| `create_floor(name, level)`, `update_floor(floor, name?, level?)` | a new floor / rename or set sort level |
 | `delete_area(area, force=false)` | remove an area; refuses while devices/entity overrides use it unless `force` |
 
 Only the fields you pass change; `""` clears a name or area (inherit again). Results carry

@@ -52,6 +52,8 @@ studio-hays ha update area <area> [--name N] [--floor F] [--dry-run]
 studio-hays ha repurpose <device> [--area A] [--name N] [--add-labels …]
                          [--remove-labels …] [--rename-entity-ids] [--dry-run]
 studio-hays ha create label|area <name> [--dry-run]
+studio-hays ha create floor <name> <level> [--dry-run]
+studio-hays ha update floor <floor> [--name N] [--level N] [--dry-run]
 studio-hays ha delete area <area> [--force] [--dry-run]
 studio-hays ha list automations
 studio-hays ha get automation <automation_id>

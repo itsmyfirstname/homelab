@@ -278,6 +278,21 @@ def test_call_service_reports_targets_and_async_note(home):
 
 # STU-21: set_state -----------------------------------------------------------------
 
+def test_create_and_update_floor_tools(home):
+    by_name = tools()
+    for name in ("create_floor", "update_floor"):
+        assert name in by_name
+        assert "Mutating" in (by_name[name].description or "")
+        assert "dry_run" in by_name[name].input_schema["properties"]
+
+    created = payload(call("create_floor", {"name": "Third Floor", "level": 2}))
+    assert created["after"]["floor_id"] == "third_floor" and home.floors["third_floor"]["level"] == 2
+    plan = payload(call("update_floor", {"floor": "Third Floor", "name": "Third", "dry_run": True}))
+    assert plan["dry_run"] is True and home.floors["third_floor"]["name"] == "Third Floor"
+    payload(call("update_floor", {"floor": "Third Floor", "name": "Third"}))
+    assert home.floors["third_floor"]["name"] == "Third"
+
+
 def test_set_state_tool_simulates_without_commanding_the_device(home):
     tool = tools()["set_state"]
     desc = tool.description or ""

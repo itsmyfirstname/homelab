@@ -254,6 +254,28 @@ def create_area(name: str, dry_run: bool = False) -> dict:
     return _run(lambda c: c.create.area(name, dry_run=dry_run))
 
 
+@mcp.tool(description=(
+    "Create a floor (level is HA's sort order, 0 = lowest). Floor names must be "
+    "unique after Home Assistant's normalization (case and spaces ignored). " + MUTATING
+))
+def create_floor(name: str, level: int, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.create.floor(name, level, dry_run=dry_run))
+
+
+@mcp.tool(description=(
+    "Rename a floor and/or set its sort level. floor is a name or id. Floor names "
+    "must be unique after Home Assistant's normalization (case and spaces ignored). "
+    + MUTATING
+))
+def update_floor(
+    floor: str,
+    name: str | None = None,
+    level: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    return _run(lambda c: c.update.floor(floor, dry_run=dry_run, **_given(name=name, level=level)))
+
+
 @mcp.tool()
 def list_domains() -> dict:
     """List entity domains with entity counts (e.g. light: 16, sensor: 73).
