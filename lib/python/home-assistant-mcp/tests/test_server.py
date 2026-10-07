@@ -255,6 +255,35 @@ def test_automation_tools_round_trip(home):
     assert "wake" not in home.automations
 
 
+SCRIPT = {
+    "alias": "Night light hallway",
+    "sequence": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+}
+
+
+def test_script_tools_round_trip(home):
+    by_name = tools()
+    for name in ("list_scripts", "get_script", "save_script", "delete_script"):
+        assert name in by_name
+    for name in ("save_script", "delete_script"):
+        assert "Mutating" in (by_name[name].description or "")
+        assert "dry_run" in by_name[name].input_schema["properties"]
+
+    plan = payload(call("save_script", {"config": SCRIPT, "script_id": "night_light", "dry_run": True}))
+    assert plan["action"] == "create" and "night_light" not in home.scripts
+    payload(call("save_script", {"config": SCRIPT, "script_id": "night_light"}))
+    assert payload(call("get_script", {"script_id": "night_light"}))["config"]["alias"] == "Night light hallway"
+    assert [s["script_id"] for s in payload(call("list_scripts"))["scripts"]] == ["night_light"]
+    payload(call("delete_script", {"script_id": "night_light"}))
+    assert "night_light" not in home.scripts
+
+
+def test_invalid_script_is_a_tool_error(home):
+    bad = {**SCRIPT, "sequence": [{"not_an_action": True}]}
+    result = call("save_script", {"config": bad, "script_id": "night_light"})
+    assert result.is_error and "Unable to determine action" in text(result)
+
+
 def test_invalid_automation_is_a_tool_error(home):
     bad = {**AUTOMATION, "triggers": [{"trigger": "nonsense"}]}
     result = call("save_automation", {"config": bad, "automation_id": "wake"})

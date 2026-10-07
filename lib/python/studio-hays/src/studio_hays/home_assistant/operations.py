@@ -115,6 +115,26 @@ OPERATIONS: tuple[Operation, ...] = (
         cli=("get", "automation"),
     ),
     Operation(
+        "get_scripts",
+        "get",
+        "script",
+        "List scripts (entity_id, script_id, alias, on/off, last_triggered). "
+        "script_id is what get/save/delete_script take.",
+        params=(FRESH,),
+        handler=lambda c, **kw: c.get.scripts(**kw),
+        cli=("list", "scripts"),
+        tool="list_scripts",
+    ),
+    Operation(
+        "get_script",
+        "get",
+        "script",
+        "Get one script's stored config (sequence/actions) by script_id.",
+        params=(Param("script_id", required=True, positional=True, description="from list_scripts"),),
+        handler=lambda c, **kw: c.get.script(**kw),
+        cli=("get", "script"),
+    ),
+    Operation(
         "query_entities",
         "query",
         "entity",
@@ -251,6 +271,35 @@ OPERATIONS: tuple[Operation, ...] = (
         ),
         handler=lambda c, **kw: c.delete.automation(**kw),
         cli=("delete", "automation"),
+    ),
+    Operation(
+        "update_script",
+        "update",
+        "script",
+        "Create or replace a script. config is the full script (alias, mode, "
+        "sequence/actions in HA 2026 syntax); script_id defaults to config.id, "
+        "else a slug of the alias. Home Assistant validates it first; dry_run=true only "
+        "validates and shows create vs replace. HA reloads scripts after a save. " + MUTATING,
+        params=(
+            Param("config", schema_type="object", required=True, description="the script config"),
+            Param("script_id", description="id to save under (defaults to config.id / alias slug)"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.update.script(**kw),
+        cli=("save", "script"),
+        tool="save_script",
+    ),
+    Operation(
+        "delete_script",
+        "delete",
+        "script",
+        "Delete a script by script_id (removes it from scripts.yaml). " + MUTATING,
+        params=(
+            Param("script_id", required=True, positional=True, description="from list_scripts"),
+            DRY_RUN,
+        ),
+        handler=lambda c, **kw: c.delete.script(**kw),
+        cli=("delete", "script"),
     ),
     Operation(
         "update_repurpose_device",

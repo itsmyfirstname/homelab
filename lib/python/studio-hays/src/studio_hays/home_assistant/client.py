@@ -20,6 +20,7 @@ import httpx
 
 from . import ws
 from .automations import get_automation, list_automations
+from .scripts import get_script, list_scripts
 from .registry import Registry, device_name
 from .writes import Create, Delete, Update, changes, predicted
 from ..core import (
@@ -218,6 +219,14 @@ class _Get:
     def automation(self, automation_id: str) -> dict:
         """One automation's stored config (verbatim, as in automations.yaml)."""
         return get_automation(self._c, automation_id)
+
+    def scripts(self, fresh: bool = False) -> dict:
+        """Scripts, from their script.* entities (HA has no list API)."""
+        return list_scripts(self._c, fresh)
+
+    def script(self, script_id: str) -> dict:
+        """One script's stored config (verbatim, as in scripts.yaml)."""
+        return get_script(self._c, script_id)
 
     def device(self, device: str, fresh: bool = False) -> dict:
         """A device (by name, id or one of its entity_ids) and its entities."""

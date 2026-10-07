@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..core import NotFoundError, StudioHaysError
 from .automations import delete_automation, save_automation
+from .scripts import delete_script, save_script
 from .registry import Registry, device_name, normalize_name, slugify
 
 if TYPE_CHECKING:
@@ -325,6 +326,13 @@ class Update:
         return save_automation(self._c, config, automation_id, dry_run)
 
     @_serialized
+    def script(
+        self, config: Mapping, script_id: str | None = None, dry_run: bool = False
+    ) -> dict:
+        """Create or replace a script (HA validates it first)."""
+        return save_script(self._c, config, script_id, dry_run)
+
+    @_serialized
     def repurpose_device(
         self,
         device: str,
@@ -377,7 +385,7 @@ def _public(step: dict) -> dict:
 
 
 class Delete:
-    """``ha.delete``: remove areas and automations. Mutating unless ``dry_run=True``."""
+    """``ha.delete``: remove areas, automations and scripts. Mutating unless ``dry_run=True``."""
 
     def __init__(self, client: "Client") -> None:
         self._c = client
@@ -433,6 +441,11 @@ class Delete:
     def automation(self, automation_id: str, dry_run: bool = False) -> dict:
         """Delete an automation (removes it from automations.yaml)."""
         return delete_automation(self._c, automation_id, dry_run)
+
+    @_serialized
+    def script(self, script_id: str, dry_run: bool = False) -> dict:
+        """Delete a script (removes it from scripts.yaml)."""
+        return delete_script(self._c, script_id, dry_run)
 
 
 class Create:

@@ -49,6 +49,7 @@ class FakeHomeAssistant:
         unregistered: Iterable[str] = (),
         ws_token: str | None = None,
         automations: Iterable[Mapping] = (),
+        scripts: Iterable[Mapping] = (),
     ) -> None:
         """``entries`` override the registry entry derived for each state;
         ``unregistered`` entity_ids get a state but no registry entry;
@@ -73,6 +74,10 @@ class FakeHomeAssistant:
         self.automations: dict[str, dict] = {}
         for a in automations:
             self._store_automation(str(a["id"]), _copy(a))
+        #: scripts.yaml: id -> config (as HA stores it)
+        self.scripts: dict[str, dict] = {}
+        for s in scripts:
+            self._store_script(str(s["id"]), _copy(s))
         #: search/related answers: entity_id -> {"automation": [...], "script": [...]}
         self.references: dict[str, dict[str, list[str]]] = {}
         #: entities whose integration applies service calls after HA replies
@@ -136,6 +141,8 @@ class FakeHomeAssistant:
                     return self._set_state(eid, body)
             if path.startswith(AUTOMATION_CONFIG):
                 return self._automation_config(request.method, path.removeprefix(AUTOMATION_CONFIG), body)
+            if path.startswith(SCRIPT_CONFIG):
+                return self._script_config(request.method, path.removeprefix(SCRIPT_CONFIG), body)
             if request.method == "GET" and path == "/api/services":
                 by_domain: dict[str, dict] = {}
                 for d, svc in SERVICES:
@@ -183,6 +190,49 @@ class FakeHomeAssistant:
                 "friendly_name": config.get("alias") or automation_id,
                 "last_triggered": None,
                 "mode": config.get("mode", "single"),
+            },
+            "last_changed": "2026-09-26T00:00:00+00:00",
+            "last_updated": "2026-09-26T00:00:00+00:00",
+        }
+
+    def _script_config(self, method: str, script_id: str, body: Any) -> httpx.Response:
+        """HA 2026.9's script config view (there is no list endpoint)."""
+        if method == "GET":
+            config = self.scripts.get(script_id)
+            return httpx.Response(200, json=config) if config else _not_found()
+        if method == "DELETE":
+            if self.scripts.pop(script_id, None) is None:
+                return _not_found()
+            for eid in [e for e, st in self.states.items() if _script_id(st) == script_id]:
+                del self.states[eid]
+            return httpx.Response(200, json={"result": "ok"})
+        if method == "POST":
+            if not isinstance(body, dict):
+                return _bad_request("Message format incorrect: expected a JSON object")
+            if "sequence" not in body and "actions" not in body and "action" not in body:
+                return _bad_request(
+                    "Message malformed: required key not provided @ data['sequence']"
+                )
+            self._store_script(script_id, _copy(body))
+            return httpx.Response(200, json={"result": "ok"})
+        return httpx.Response(405)
+
+    def _store_script(self, script_id: str, config: dict) -> None:
+        """Save a config and keep its script.* entity (id attribute) in step."""
+        self.scripts[script_id] = config
+        existing = next(
+            (e for e, st in self.states.items() if _script_id(st) == script_id), None
+        )
+        eid = existing or f"script.{script_id}"
+        self.states[eid] = {
+            "entity_id": eid,
+            "state": "off",
+            "attributes": {
+                "id": script_id,
+                "friendly_name": config.get("alias") or script_id,
+                "last_triggered": None,
+                "mode": config.get("mode", "single"),
+                "current": 0,
             },
             "last_changed": "2026-09-26T00:00:00+00:00",
             "last_updated": "2026-09-26T00:00:00+00:00",
@@ -399,6 +449,7 @@ class FakeHomeAssistant:
 
 
 AUTOMATION_CONFIG = "/api/config/automation/config/"
+SCRIPT_CONFIG = "/api/config/script/config/"
 KNOWN_TRIGGERS = {"state", "time", "numeric_state", "template", "event", "sun", "time_pattern"}
 KNOWN_ACTIONS = {"action", "service", "choose", "delay", "if", "repeat", "wait_template",
                  "wait_for_trigger", "variables", "stop", "condition", "parallel", "sequence"}
@@ -406,6 +457,12 @@ KNOWN_ACTIONS = {"action", "service", "choose", "delay", "if", "repeat", "wait_t
 
 def _automation_id(state: Mapping) -> str | None:
     if not str(state.get("entity_id", "")).startswith("automation."):
+        return None
+    return (state.get("attributes") or {}).get("id")
+
+
+def _script_id(state: Mapping) -> str | None:
+    if not str(state.get("entity_id", "")).startswith("script."):
         return None
     return (state.get("attributes") or {}).get("id")
 

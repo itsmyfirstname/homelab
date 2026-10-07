@@ -496,6 +496,20 @@ WAKEUP: dict[str, Any] = {
     "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
 }
 
+BEDTIME_SCRIPT = {
+    "id": "routine_bedtime",
+    "alias": "Routine Bedtime",
+    "description": "",
+    "mode": "single",
+    "sequence": [{"action": "light.turn_off", "target": {"entity_id": "light.kitchen"}}],
+}
+
+NIGHT_LIGHT: dict[str, Any] = {
+    "alias": "Night light hallway",
+    "mode": "single",
+    "sequence": [{"action": "light.turn_on", "target": {"entity_id": "light.kitchen"}}],
+}
+
 
 @pytest.fixture
 def home(monkeypatch):
@@ -504,7 +518,8 @@ def home(monkeypatch):
     monkeypatch.setenv("STUDIOHAYS_HA_TOKEN", TOKEN)
     with FakeHomeAssistant(
         STATES, token=TOKEN, devices=DEVICES, areas=AREAS, labels=LABELS,
-        floors=FLOORS, entries=ENTRIES, unregistered=["sun.sun"], automations=[BEDTIME],
+        floors=FLOORS, entries=ENTRIES, unregistered=["sun.sun"],
+        automations=[BEDTIME], scripts=[BEDTIME_SCRIPT],
     ) as ha:
         yield ha
 
@@ -1211,6 +1226,125 @@ def test_alias_derived_id_never_silently_replaces(home):
         ha.update.automation({**WAKEUP, "mode": "restart"})
     replaced = ha.update.automation({**WAKEUP, "mode": "restart"}, automation_id="hallway_night_light_wake_up")
     assert replaced["action"] == "replace"
+
+
+# scripts ----------------------------------------------------------------------
+
+def test_list_scripts_from_entities(home):
+    rows = Client().get.scripts()["scripts"]
+    assert rows == [{
+        "entity_id": "script.routine_bedtime", "script_id": "routine_bedtime",
+        "alias": "Routine Bedtime",
+        "state": "off", "last_triggered": None, "mode": "single",
+        "area": None, "labels": [], "disabled": False,
+    }]
+
+
+def test_get_script_returns_config_verbatim(home):
+    got = Client().get.script("routine_bedtime")
+    assert got["entity_id"] == "script.routine_bedtime" and got["config"] == BEDTIME_SCRIPT
+
+
+def test_get_missing_script_is_not_found(home):
+    with pytest.raises(NotFoundError, match="no script with id 'nope' in scripts.yaml"):
+        Client().get.script("nope")
+
+
+def test_save_script_dry_run_validates_without_writing(home):
+    result = Client().update.script(NIGHT_LIGHT, dry_run=True)
+    assert result["script_id"] == "night_light_hallway"
+    assert result["dry_run"] is True and result["action"] == "create" and result["before"] is None
+    assert [k for k, _ in home.commands if k == "validate_config"] == ["validate_config"]
+    assert rest_writes(home) == []
+    assert "night_light_hallway" not in home.scripts
+
+
+def test_invalid_script_is_rejected_with_has_reasons(home):
+    bad = {**NIGHT_LIGHT, "sequence": [{"not_an_action": True}]}
+    with pytest.raises(StudioHaysError, match=r"script 'night_light_hallway' is invalid: "
+                                              r"actions: Unable to determine action"):
+        Client().update.script(bad)
+    assert rest_writes(home) == []
+
+
+def test_save_script_creates_then_replaces_and_is_audited(home):
+    ha = Client()
+    created = ha.update.script(NIGHT_LIGHT, script_id="night_light_hallway")
+    assert created["action"] == "create" and created["after"]["alias"] == NIGHT_LIGHT["alias"]
+    assert rest_writes(home) == [("POST", "/api/config/script/config/night_light_hallway")]
+    listed = {r["script_id"]: r for r in ha.get.scripts()["scripts"]}
+    assert listed["night_light_hallway"]["entity_id"] == "script.night_light_hallway"
+
+    dimmer = {**NIGHT_LIGHT, "sequence": [{"action": "light.turn_on", "data": {"brightness_pct": 10}}]}
+    replaced = ha.update.script(dimmer, script_id="night_light_hallway")
+    assert replaced["action"] == "replace"
+    assert replaced["before"]["sequence"] == NIGHT_LIGHT["sequence"]
+    assert home.scripts["night_light_hallway"]["sequence"] == dimmer["sequence"]
+    assert created["entity_id"] == "script.night_light_hallway"
+    ops = [(o["op"], o["resource_type"], o["ok"]) for o in ha.state.history()["ops"] if o["resource_type"] == "script"]
+    assert ops == [("update", "script", True), ("create", "script", True)]
+
+
+def test_script_config_id_and_argument_must_agree(home):
+    with pytest.raises(StudioHaysError, match="doesn't match"):
+        Client().update.script({**NIGHT_LIGHT, "id": "a"}, script_id="b", dry_run=True)
+
+
+def test_delete_script(home):
+    ha = Client()
+    plan = ha.delete.script("routine_bedtime", dry_run=True)
+    assert plan["before"] == BEDTIME_SCRIPT and rest_writes(home) == []
+    ha.delete.script("routine_bedtime")
+    assert "routine_bedtime" not in home.scripts
+    assert [r["script_id"] for r in ha.get.scripts()["scripts"]] == []
+    with pytest.raises(NotFoundError):
+        ha.delete.script("routine_bedtime")
+
+
+def test_cli_save_script_dry_run(home, capsys):
+    code, out = run_cli(capsys, "ha", "save", "script", "--config", json.dumps(NIGHT_LIGHT), "--dry-run")
+    assert code == 0 and out["action"] == "create" and out["valid"] is True
+
+
+def test_list_scripts_includes_disabled_ones_and_registry_metadata(home):
+    home.entries["script.routine_bedtime"] = {
+        **home.entries.get("script.routine_bedtime", {}),
+        "id": "reg-bedtime-script", "entity_id": "script.routine_bedtime",
+        "unique_id": "routine_bedtime", "area_id": "kitchen", "labels": ["outdoor"],
+    }
+    home.entries["script.old_one"] = {
+        "id": "reg-old-script", "entity_id": "script.old_one", "unique_id": "99",
+        "name": None, "original_name": "old one", "area_id": None, "device_id": None,
+        "labels": [], "disabled_by": "user",
+    }
+    rows = {r["entity_id"]: r for r in Client().get.scripts()["scripts"]}
+    assert rows["script.routine_bedtime"]["area"] == {"area_id": "kitchen", "name": "Kitchen"}
+    assert rows["script.routine_bedtime"]["labels"] == [{"label_id": "outdoor", "name": "Outdoor"}]
+    assert rows["script.old_one"] == {
+        "entity_id": "script.old_one", "script_id": "99", "alias": "old one",
+        "state": None, "last_triggered": None, "mode": None,
+        "area": None, "labels": [], "disabled": True,
+    }
+
+
+def test_alias_derived_script_id_never_silently_replaces(home):
+    ha = Client()
+    ha.update.script(NIGHT_LIGHT)  # id derived from the alias
+    with pytest.raises(StudioHaysError, match="already exists — pass script_id='night_light_hallway' to replace it"):
+        ha.update.script({**NIGHT_LIGHT, "mode": "restart"})
+    replaced = ha.update.script({**NIGHT_LIGHT, "mode": "restart"}, script_id="night_light_hallway")
+    assert replaced["action"] == "replace"
+
+
+def test_yaml_script_without_id_is_listed_but_not_editable(home):
+    home.states["script.package_one"] = entity("script.package_one", "off", "Package one")
+    home.entries["script.package_one"] = {
+        "id": "reg-pkg", "entity_id": "script.package_one", "unique_id": None,
+        "name": None, "original_name": "Package one", "area_id": None, "device_id": None,
+        "labels": [], "disabled_by": None,
+    }
+    rows = {r["entity_id"]: r for r in Client().get.scripts()["scripts"]}
+    assert rows["script.package_one"]["script_id"] is None
 
 
 def test_call_targets_resolve_areas_and_devices(home):

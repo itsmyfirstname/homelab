@@ -110,6 +110,11 @@ ha.get.automation("hallway_nightlight_wakeup")
 ha.update.automation({"alias": "…", "triggers": […], "actions": […]}, dry_run=True)
 ha.delete.automation("hallway_nightlight_wakeup")
 
+ha.get.scripts()                         # from script.* entities
+ha.get.script("routine_bedtime")
+ha.update.script({"alias": "…", "sequence": […]}, dry_run=True)
+ha.delete.script("routine_bedtime")
+
 ha.call.service("light", "turn_on", entity_id="light.kitchen")
 ha.call.service("switch", "toggle", entity_id="switch.garage")
 ha.call.set_state("binary_sensor.occupancy", "on", dry_run=True)  # simulate; does not command
@@ -125,14 +130,15 @@ HA is **mirror mode** in v0. `update` / `create` edit HA's registries (names,
 areas, floors, labels) over the WebSocket API and write the result through to
 the mirror (M2.1, STU-6/15/13); `delete.area` removes an area (STU-18).
 
-**Automations are the exception to "`get` is state only"** (STU-16): HA
-2026.9 keeps their config only behind its REST config view, so
-`get.automation(id)` reads it live (the envelope's `last_synced`/`stale`
-describe the entity mirror, not the config). `update.automation(config)` is
-an upsert — HA's config API has no separate create — and reports
-`action: create|replace`; its CLI verb is `save` (`ha save automation`) and
-its MCP tool `save_automation`. Automation configs aren't mirrored, only
-audited (`create` / `update` / `delete` ops rows).
+**Automations and scripts are the exception to "`get` is state only"** (STU-16):
+HA 2026.9 keeps their config only behind its REST config view, so
+`get.automation(id)` / `get.script(id)` read it live (the envelope's
+`last_synced`/`stale` describe the entity mirror, not the config).
+`update.automation(config)` / `update.script(config)` are upserts — HA's
+config API has no separate create — and report `action: create|replace`;
+CLI verbs are `save` (`ha save automation` / `ha save script`) and MCP tools
+`save_automation` / `save_script`. Configs aren't mirrored, only audited
+(`create` / `update` / `delete` ops rows).
 
 ## Worked example: `proxmox`
 

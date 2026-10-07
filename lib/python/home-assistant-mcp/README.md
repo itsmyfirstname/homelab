@@ -100,6 +100,13 @@ entities (their `id` attribute is the `automation_id`). `save_automation` create
 through `/api/config/automation/config/{id}` after Home Assistant validates the config
 (`dry_run=true` validates only); HA reloads automations itself. Save and delete are mutating.
 
+### Scripts: `list_scripts`, `get_script(script_id)`, `save_script(config, script_id?)`, `delete_script(script_id)`
+
+Same pattern against `scripts.yaml` / `/api/config/script/config/{id}`. `list_scripts` reads the
+`script.*` entities (`id` or registry `unique_id` is the `script_id`). YAML scripts without an id
+have `script_id` null and aren't editable. `save_script` validates first (`dry_run=true` validates
+only); HA reloads scripts itself. Save and delete are mutating.
+
 ### `set_state(entity_id, state, attributes?, dry_run=false)`
 
 Simulate an entity's state in Home Assistant's state machine. **Does not command

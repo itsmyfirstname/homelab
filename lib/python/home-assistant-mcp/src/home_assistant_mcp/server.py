@@ -246,6 +246,41 @@ def delete_automation(automation_id: str, dry_run: bool = False) -> dict:
     return _run(lambda c: c.delete.automation(automation_id, dry_run=dry_run))
 
 
+@mcp.tool()
+def list_scripts() -> dict:
+    """List scripts: entity_id, script_id (what get/save/delete_script
+    take), alias, state (on/off), last_triggered, mode. Scripts defined in
+    YAML without an id have script_id null and aren't editable here.
+    """
+    return _run(lambda c: c.get.scripts())
+
+
+@mcp.tool()
+def get_script(script_id: str) -> dict:
+    """Get one script's stored config (alias, mode, sequence/actions) by
+    script_id, verbatim as in scripts.yaml.
+    """
+    return _run(lambda c: c.get.script(script_id))
+
+
+@mcp.tool(description=(
+    "Create or replace a script. config is the whole script: alias, "
+    "mode, and sequence/actions in Home Assistant 2026 syntax "
+    '(e.g. {"action": "light.turn_on", ...}). script_id defaults to config.id, '
+    "else a slug of the alias. Home Assistant validates the config first and "
+    "reports what's wrong; dry_run=true only validates and says whether it "
+    "would create or replace. Scripts reload automatically after a save. "
+    + MUTATING
+))
+def save_script(config: dict, script_id: str | None = None, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.update.script(config, script_id=script_id, dry_run=dry_run))
+
+
+@mcp.tool(description="Delete a script by script_id (removes it from scripts.yaml). " + MUTATING)
+def delete_script(script_id: str, dry_run: bool = False) -> dict:
+    return _run(lambda c: c.delete.script(script_id, dry_run=dry_run))
+
+
 @mcp.tool(description=(
     "Create an area (assign its floor with update_area). Fails if another area's "
     "name matches after Home Assistant's normalization (case and spaces ignored). " + MUTATING
